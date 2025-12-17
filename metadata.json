@@ -1,0 +1,7 @@
+{
+  "name": "Cascata Management Studio 1",
+  "description": "A production-grade self-hosted BaaS platform management interface for multi-tenant project orchestration, database exploration, and RLS policy management.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}

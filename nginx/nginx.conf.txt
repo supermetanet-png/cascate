@@ -1,0 +1,43 @@
+
+user  nginx;
+worker_processes  auto;
+
+error_log  /var/log/nginx/error.log warn;
+pid        /var/run/nginx.pid;
+
+events {
+    worker_connections  1024;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    sendfile        on;
+    keepalive_timeout  65;
+
+    server {
+        listen 80;
+
+        # Management Studio Frontend
+        location / {
+            proxy_pass http://frontend:80;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+
+        # Control Plane API
+        location /api/control/ {
+            proxy_pass http://backend_control:3000/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Project-ID $http_x_project_id;
+        }
+
+        # Data Plane API
+        location /api/data/ {
+            proxy_pass http://backend_data:3000/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Project-ID $http_x_project_id;
+        }
+    }
+}
