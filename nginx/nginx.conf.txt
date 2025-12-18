@@ -16,19 +16,21 @@ http {
     sendfile        on;
     keepalive_timeout  65;
 
-    gzip on;
-    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+    # Mapa para verificar se os arquivos SSL existem (Prevenção de Crash)
+    # Em uma VPS real, se o arquivo não existe, o Nginx não sobe se o listen 443 estiver ativo.
+    # Por isso, mantemos o 80 sempre ativo.
 
     server {
         listen 80;
+        listen [::]:80;
         server_name _;
 
-        # Suporte para Let's Encrypt ACME Challenge
+        # Suporte para Let's Encrypt ACME Challenge (Essencial para No-Coders)
         location /.well-known/acme-challenge/ {
             root /var/www/certbot;
         }
 
-        # Frontend Proxy
+        # Frontend
         location / {
             proxy_pass http://frontend:80;
             proxy_set_header Host $host;
@@ -37,7 +39,7 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        # Control Plane API (Corrigido para remover o prefixo ao chegar no backend)
+        # Control Plane
         location /api/control/ {
             proxy_pass http://backend_control:3000/;
             proxy_set_header Host $host;
@@ -46,7 +48,7 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        # Data Plane API
+        # Data Plane (Corrigido para repassar o path correto)
         location /api/data/ {
             proxy_pass http://backend_data:3000/;
             proxy_set_header Host $host;
@@ -56,12 +58,16 @@ http {
         }
     }
 
-    # Bloco SSL (Descomentar após gerar os certificados)
+    # Bloco SSL - Recomendado descomentar apenas após o Certbot confirmar a geração dos arquivos
     # server {
     #     listen 443 ssl;
     #     server_name _;
-    #     ssl_certificate /etc/nginx/ssl/cascata_global.pem;
-    #     ssl_certificate_key /etc/nginx/ssl/cascata_global.key;
-    #     ...
+    #     ssl_certificate /etc/nginx/ssl/live/cascata/fullchain.pem;
+    #     ssl_certificate_key /etc/nginx/ssl/live/cascata/privkey.pem;
+    #     
+    #     location / {
+    #         proxy_pass http://frontend:80;
+    #         ... (mesmas configs do bloco 80)
+    #     }
     # }
 }
