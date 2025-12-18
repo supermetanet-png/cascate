@@ -1,23 +1,19 @@
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
-  Shield, Lock, Unlock, Plus, Trash2, Edit2, AlertCircle, Loader2, X, 
-  CheckCircle2, Zap, User, Users, Globe, Eye, Code, ChevronDown, 
-  Activity, ShieldAlert, Sliders, Save, Database
+  Shield, Lock, Plus, AlertCircle, Loader2, X, 
+  CheckCircle2, Zap, Sliders, Save, Database, Activity, ShieldAlert
 } from 'lucide-react';
 
 const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [activeTab, setActiveTab] = useState<'policies' | 'governor'>('policies');
   const [policies, setPolicies] = useState<any[]>([]);
   const [tables, setTables] = useState<any[]>([]);
-  const [project, setProject] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [showModal, setShowModal] = useState(false);
   const [executing, setExecuting] = useState(false);
   
-  // Security Config State
   const [securityConfig, setSecurityConfig] = useState<any>({
     rate_limit: 0,
     table_permissions: {}
@@ -43,8 +39,9 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
       setPolicies(policiesData);
       setTables(tablesData);
       const curr = projects.find((p:any) => p.slug === projectId);
-      setProject(curr);
-      if (curr?.security_config) setSecurityConfig(curr.security_config);
+      if (curr?.security_config) {
+         setSecurityConfig(typeof curr.security_config === 'string' ? JSON.parse(curr.security_config) : curr.security_config);
+      }
     } catch (err: any) { setError(err.message); } finally { setLoading(false); }
   };
 
@@ -95,12 +92,11 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
       <div className="flex-1 overflow-y-auto p-10">
         {activeTab === 'policies' ? (
           <div className="max-w-6xl mx-auto space-y-8">
-             <div className="bg-indigo-600 rounded-[2.5rem] p-10 text-white flex items-center gap-8 shadow-2xl shadow-indigo-100 relative overflow-hidden">
+             <div className="bg-indigo-600 rounded-[2.5rem] p-10 text-white flex items-center gap-8 shadow-2xl relative overflow-hidden">
                 <div className="absolute top-0 right-0 p-10 opacity-10"><Shield size={180} /></div>
                 <div className="w-20 h-20 bg-white/20 rounded-3xl backdrop-blur-md flex items-center justify-center shrink-0"><Zap size={40} /></div>
-                <div><h3 className="text-2xl font-black mb-1">Database RLS (PostgreSQL Native)</h3><p className="text-indigo-100 text-sm font-medium opacity-80 max-w-2xl">Políticas aplicadas diretamente no motor do banco de dados para isolamento físico de linhas.</p></div>
+                <div><h3 className="text-2xl font-black mb-1">Database RLS (PostgreSQL Native)</h3><p className="text-indigo-100 text-sm font-medium opacity-80 max-w-2xl">Security enforced directly at the storage engine. Best for physical tenant isolation.</p></div>
              </div>
-             {/* Listagem de políticas simplificada */}
              <div className="grid grid-cols-1 gap-4">
                 {policies.length === 0 ? <EmptyState /> : policies.map((p, i) => <PolicyCard key={i} policy={p} />)}
              </div>
@@ -109,8 +105,8 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
           <div className="max-w-6xl mx-auto space-y-12">
              <div className="bg-slate-900 rounded-[2.5rem] p-10 text-white flex items-center justify-between shadow-2xl relative overflow-hidden">
                 <div className="flex items-center gap-8 relative z-10">
-                   <div className="w-20 h-20 bg-indigo-600 rounded-3xl flex items-center justify-center shrink-0 shadow-2xl shadow-indigo-500/30"><Activity size={40} /></div>
-                   <div><h3 className="text-2xl font-black mb-1 italic">Security Governor</h3><p className="text-slate-400 text-sm font-medium max-w-xl">Capa de firewall inteligente que valida permissões CRUD e Rate Limits antes das requisições atingirem o banco.</p></div>
+                   <div className="w-20 h-20 bg-indigo-600 rounded-3xl flex items-center justify-center shrink-0"><Activity size={40} /></div>
+                   <div><h3 className="text-2xl font-black mb-1 italic">Security Governor</h3><p className="text-slate-400 text-sm font-medium max-w-xl">Intelligent gateway firewall that intercepts and validates operations before they hit the database.</p></div>
                 </div>
                 <button onClick={saveGovernor} disabled={executing} className="bg-white text-slate-900 px-8 py-4 rounded-2xl text-xs font-black uppercase tracking-widest flex items-center gap-3 hover:bg-indigo-50 transition-all shadow-xl active:scale-95">
                   {executing ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Governor Rules
@@ -120,19 +116,17 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
              <div className="grid grid-cols-1 lg:grid-cols-3 gap-10">
                 <div className="bg-white border border-slate-200 rounded-[3rem] p-10 shadow-sm space-y-6">
                    <div className="flex items-center gap-4 mb-4"><div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center"><Activity size={20}/></div><h4 className="font-black text-slate-900 uppercase text-xs tracking-widest">Global Rate Limit</h4></div>
-                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Requisições por Minuto / IP</p>
+                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Requests per Minute / IP</p>
                    <input type="number" value={securityConfig.rate_limit} onChange={(e) => setSecurityConfig({...securityConfig, rate_limit: parseInt(e.target.value)})} className="w-full bg-slate-50 border border-slate-100 rounded-2xl py-5 px-8 text-2xl font-black text-indigo-600 outline-none" />
-                   <p className="text-[10px] text-slate-400 font-medium">Use <b>0</b> para desativar o limite de tráfego.</p>
+                   <p className="text-[10px] text-slate-400 font-medium italic">Set to 0 to disable throttling.</p>
                 </div>
 
                 <div className="lg:col-span-2 bg-white border border-slate-200 rounded-[3rem] p-10 shadow-sm space-y-8">
-                   <div className="flex items-center justify-between"><div className="flex items-center gap-4"><div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center"><Database size={20}/></div><h4 className="font-black text-slate-900 uppercase text-xs tracking-widest">Table Access Overrides</h4></div></div>
-                   
+                   <div className="flex items-center justify-between"><div className="flex items-center gap-4"><div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center"><Database size={20}/></div><h4 className="font-black text-slate-900 uppercase text-xs tracking-widest">No-Code Table Access</h4></div></div>
                    <div className="space-y-4">
                       {tables.map(t => (
                         <div key={t.name} className="p-6 border border-slate-100 bg-slate-50/50 rounded-3xl flex items-center justify-between gap-8 group">
-                           <div className="flex items-center gap-4 min-w-[140px]"><div className="w-8 h-8 bg-white border border-slate-200 rounded-lg flex items-center justify-center text-slate-400 group-hover:text-indigo-600 transition-colors"><Database size={14}/></div><span className="text-sm font-black text-slate-800 font-mono tracking-tight">{t.name}</span></div>
-                           
+                           <div className="flex items-center gap-4 min-w-[140px]"><div className="w-8 h-8 bg-white border border-slate-200 rounded-lg flex items-center justify-center text-slate-400 group-hover:text-indigo-600 transition-colors"><Database size={14}/></div><span className="text-sm font-black text-slate-800 font-mono">{t.name}</span></div>
                            <div className="flex-1 flex justify-around gap-4">
                               <PermGroup label="ANON" table={t.name} role="anon" config={securityConfig.table_permissions[t.name]?.anon} onUpdate={updateTablePerm} />
                               <div className="w-[1px] bg-slate-200 h-10"></div>
@@ -158,7 +152,7 @@ const PermGroup = ({ label, table, role, config = { create: true, read: true, up
           {['create', 'read', 'update', 'delete'].map(op => {
             const isActive = config[op] !== false;
             return (
-              <button key={op} onClick={() => onUpdate(table, role, op, !isActive)} title={`${op.toUpperCase()}: ${isActive ? 'Allowed' : 'Denied'}`} className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${isActive ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-600 text-white shadow-lg shadow-rose-200'}`}>
+              <button key={op} onClick={() => onUpdate(table, role, op, !isActive)} title={`${op.toUpperCase()}: ${isActive ? 'Allowed' : 'Denied'}`} className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${isActive ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-rose-600 text-white shadow-lg'}`}>
                 <span className="text-[8px] font-black">{op[0].toUpperCase()}</span>
               </button>
             );
@@ -175,7 +169,7 @@ const PolicyCard = ({ policy }: any) => (
       <div><h4 className="font-black text-slate-900">{policy.policyname}</h4><p className="text-[10px] font-mono text-slate-400 uppercase tracking-widest mt-1">ON public.{policy.tablename} FOR {policy.cmd}</p></div>
     </div>
     <div className="flex items-center gap-4">
-       <div className="text-right"><span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">Visibility</span><code className="text-[10px] font-bold text-indigo-600 font-mono">{policy.qual}</code></div>
+       <div className="text-right"><span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">Visibility Filter</span><code className="text-[10px] font-bold text-indigo-600 font-mono">{policy.qual}</code></div>
     </div>
   </div>
 );

@@ -25,10 +25,10 @@ if (!fs.existsSync(STORAGE_ROOT)) fs.mkdirSync(STORAGE_ROOT, { recursive: true }
 const upload = multer({ dest: 'uploads/' });
 const generateKey = () => crypto.randomBytes(32).toString('hex');
 
-// In-memory rate limiting (Production should use Redis/Table)
+// In-memory rate limiting state
 const rateLimitMap = new Map<string, { count: number, reset: number }>();
 
-// --- MIDDLEWARES DE SEGURANÇA ---
+// --- SECURITY MIDDLEWARES ---
 
 const securityGovernor = async (req: any, res: any, next: NextFunction) => {
   if (!req.project || req.path.includes('/control/')) return next();
@@ -51,23 +51,30 @@ const securityGovernor = async (req: any, res: any, next: NextFunction) => {
     rateLimitMap.set(key, record);
 
     if (record.count > rate_limit) {
-      return res.status(429).json({ error: 'Rate limit exceeded for this project.' });
+      return res.status(429).json({ error: 'Rate limit exceeded for this project instance.' });
     }
   }
 
-  // 2. Table Permission Check (No-Code Layer)
-  // Determina a operação baseada no método
-  const methodMap: Record<string, string> = { 'GET': 'read', 'POST': 'create', 'PUT': 'update', 'PATCH': 'update', 'DELETE': 'delete' };
+  // 2. No-Code Table Permission Governor
+  const methodMap: Record<string, string> = { 
+    'GET': 'read', 
+    'POST': 'create', 
+    'PUT': 'update', 
+    'PATCH': 'update', 
+    'DELETE': 'delete' 
+  };
+  
   const operation = methodMap[req.method];
-  const table = req.params.table;
+  const pathParts = req.path.split('/');
+  const table = pathParts[pathParts.indexOf('tables') + 1];
 
   if (table && operation && table_permissions[table]) {
     const perm = table_permissions[table];
     const role = req.userRole || 'anon';
     
-    // Se a permissão for explicitamente 'deny' para a role/operação
+    // Check if the specific operation is allowed for the role
     if (perm[role] && perm[role][operation] === false) {
-      return res.status(403).json({ error: `Operation '${operation}' is disabled for '${role}' on table '${table}'.` });
+      return res.status(403).json({ error: `Governor: Access Denied. Operation '${operation}' is disabled for '${role}' on table '${table}'.` });
     }
   }
 
@@ -82,37 +89,42 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
   const slugFromUrl = pathParts[3]; 
 
   try {
+    // 1. Domain-First Resolution (Binding check)
     let projectResult = await systemPool.query('SELECT * FROM system.projects WHERE custom_domain = $1', [host]);
     
-    // Se o domínio bate, mas o usuário tentou acessar via /api/data/OUTRO-SLUG, bloqueia.
     if (projectResult.rowCount > 0) {
       req.project = projectResult.rows[0];
+      // If the domain is bound to a project, prevent accessing another project via slug through this host
       if (slugFromUrl && slugFromUrl !== req.project.slug) {
-        return res.status(403).json({ error: 'Domain binding violation. This domain is locked to another project.' });
+        return res.status(403).json({ error: 'Domain Binding Violation: This endpoint is restricted to its authorized domain.' });
       }
     } else if (slugFromUrl) {
+      // 2. Slug-based fallback
       projectResult = await systemPool.query('SELECT * FROM system.projects WHERE slug = $1', [slugFromUrl]);
       if (projectResult.rows[0]?.custom_domain) {
-        // Se o projeto tem um domínio customizado, ele SÓ pode ser acessado por esse domínio.
-        return res.status(403).json({ error: 'Project locked to custom domain. Direct slug access disabled for security.' });
+        // SECURITY GATE: If a project has a custom domain, slug access is DISALLOWED to prevent IP-based bypassing
+        return res.status(403).json({ error: 'Project Locked: This instance requires access via its authorized custom domain.' });
       }
       req.project = projectResult.rows[0];
     }
 
     if (!req.project) {
-      if (req.path.startsWith('/api/data/')) return res.status(404).json({ error: 'Project context not found.' });
+      if (req.path.startsWith('/api/data/')) return res.status(404).json({ error: 'Project not found or domain unauthorized.' });
       return next();
     }
 
-    req.projectPool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${req.project.db_name}`) });
+    const dbName = req.project.db_name;
+    req.projectPool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${dbName}`) });
     next();
-  } catch (e) { res.status(500).json({ error: 'DB Resolution Error' }); }
+  } catch (e) { 
+    res.status(500).json({ error: 'Gateway Resolution Error' }); 
+  }
 };
 
 const cascataAuth = async (req: any, res: any, next: NextFunction) => {
   if (req.path.includes('/control/')) {
     const authHeader = req.headers['authorization'];
-    if (!authHeader) return res.status(401).json({ error: 'Admin Required' });
+    if (!authHeader) return res.status(401).json({ error: 'Admin Access Required' });
     try {
       jwt.verify(authHeader.split(' ')[1], process.env.SYSTEM_JWT_SECRET || 'secret');
       return next();
@@ -141,7 +153,7 @@ app.use(resolveProject as any);
 app.use(cascataAuth as any);
 app.use(securityGovernor as any);
 
-// --- CONTROL PLANE ---
+// --- CONTROL PLANE ENDPOINTS ---
 
 app.post('/api/control/auth/login', async (req, res) => {
   const { email, password } = req.body;
@@ -150,7 +162,7 @@ app.post('/api/control/auth/login', async (req, res) => {
   if (admin && admin.password_hash === password) {
     const token = jwt.sign({ sub: admin.id, role: 'admin' }, process.env.SYSTEM_JWT_SECRET || 'secret');
     res.json({ token });
-  } else res.status(401).json({ error: 'Invalid admin credentials' });
+  } else res.status(401).json({ error: 'Invalid credentials' });
 });
 
 app.get('/api/control/projects', async (req, res) => {
@@ -169,7 +181,7 @@ app.patch('/api/control/projects/:slug', async (req: any, res: any) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-// WEBHOOKS CONTROL (Corrigido 404)
+// Fixed Webhook 404 Routes
 app.get('/api/control/projects/:slug/webhooks', async (req, res) => {
   const result = await systemPool.query('SELECT * FROM system.webhooks WHERE project_slug = $1', [req.params.slug]);
   res.json(result.rows);
@@ -204,24 +216,29 @@ app.post('/api/control/projects', async (req: any, res: any) => {
         IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'service_role') THEN CREATE ROLE service_role NOLOGIN; END IF;
       END $$;
       CREATE SCHEMA IF NOT EXISTS auth;
-      CREATE TABLE IF NOT EXISTS auth.users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), email TEXT UNIQUE, password_hash TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT now());
     `);
     await tempPool.end();
     res.json(result.rows[0]);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-// --- DATA PLANE ---
+// --- DATA PLANE ENDPOINTS ---
+
+app.post('/api/data/:slug/query', async (req: any, res: any) => {
+  try {
+    const result = await req.projectPool.query(req.body.sql);
+    res.json(result);
+  } catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+
+app.get('/api/data/:slug/tables', async (req: any, res: any) => {
+  const result = await req.projectPool.query("SELECT table_name as name FROM information_schema.tables WHERE table_schema = 'public'");
+  res.json(result.rows);
+});
 
 app.get('/api/data/:slug/policies', async (req: any, res: any) => {
   const result = await req.projectPool.query(`SELECT schemaname, tablename, policyname, roles, cmd, qual, with_check FROM pg_policies WHERE schemaname = 'public'`);
   res.json(result.rows);
-});
-
-app.post('/api/data/:slug/policies', async (req: any, res: any) => {
-  const { name, table, command, role, using, withCheck } = req.body;
-  const sql = `ALTER TABLE public."${table}" ENABLE ROW LEVEL SECURITY; CREATE POLICY "${name}" ON public."${table}" FOR ${command} TO ${role} USING (${using}) ${withCheck ? `WITH CHECK (${withCheck})` : ''};`;
-  try { await req.projectPool.query(sql); res.json({ success: true }); } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
 app.post('/api/data/:slug/rpc/:name', async (req: any, res: any) => {
@@ -231,36 +248,6 @@ app.post('/api/data/:slug/rpc/:name', async (req: any, res: any) => {
     const result = await req.projectPool.query(`SELECT * FROM public."${req.params.name}"(${placeholders})`, Object.values(params));
     res.json(result.rows);
   } catch (e: any) { res.status(400).json({ error: e.message }); }
-});
-
-app.get('/api/data/:slug/tables/:table/data', async (req: any, res: any) => {
-  try { const result = await req.projectPool.query(`SELECT * FROM public."${req.params.table}" LIMIT 1000`); res.json(result.rows); } catch (e: any) { res.status(400).json({ error: e.message }); }
-});
-
-app.post('/api/data/:slug/query', async (req: any, res: any) => {
-  try { const result = await req.projectPool.query(req.body.sql); res.json(result); } catch (e: any) { res.status(400).json({ error: e.message }); }
-});
-
-app.get('/api/data/:slug/tables', async (req: any, res: any) => {
-  const result = await req.projectPool.query("SELECT table_name as name FROM information_schema.tables WHERE table_schema = 'public'");
-  res.json(result.rows);
-});
-
-app.get('/api/data/:slug/stats', async (req: any, res: any) => {
-  const tables = await req.projectPool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'");
-  const size = await req.projectPool.query("SELECT pg_size_pretty(pg_database_size(current_database()))");
-  res.json({ tables: parseInt(tables.rows[0].count), size: size.rows[0].pg_size_pretty });
-});
-
-// UI SETTINGS
-app.get('/api/data/:slug/ui-settings/:table', async (req: any, res: any) => {
-  const result = await systemPool.query('SELECT settings FROM system.ui_settings WHERE project_slug = $1 AND table_name = $2', [req.project.slug, req.params.table]);
-  res.json(result.rows[0]?.settings || {});
-});
-
-app.post('/api/data/:slug/ui-settings/:table', async (req: any, res: any) => {
-  await systemPool.query('INSERT INTO system.ui_settings (project_slug, table_name, settings) VALUES ($1, $2, $3) ON CONFLICT (project_slug, table_name) DO UPDATE SET settings = $3', [req.project.slug, req.params.table, req.body.settings]);
-  res.json({ success: true });
 });
 
 app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v2.9 Operational on port ${PORT}`));
