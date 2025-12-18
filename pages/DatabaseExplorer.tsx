@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Database, Search, Play, Table as TableIcon, Loader2, AlertCircle, Plus, X, Terminal, Code, Trash2, Download, Upload, MoreHorizontal, Copy, Edit, CheckSquare, Square, CheckCircle2, Calendar, Wand2, Hash } from 'lucide-react';
 
@@ -202,10 +203,10 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
       const reader = new FileReader();
       reader.onload = async (evt) => {
         const bstr = evt.target?.result;
-        // Importante: Manter raw: false para que as datas convertidas do Excel venham formatadas
+        // Configurar XLSX para tratar datas corretamente
         const workbook = (window as any).XLSX.read(bstr, { type: 'binary', cellDates: true, dateNF: 'yyyy-mm-dd hh:mm:ss' });
         const sheetName = workbook.SheetNames[0];
-        const rawData = (window as any).XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { raw: false });
+        const data = (window as any).XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { raw: false });
         
         const fileName = file.name.split('.')[0].replace(/[^a-z0-9]/gi, '_').toLowerCase();
         let targetTable = fileName;
@@ -213,19 +214,19 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         // Verificar se a tabela existe
         const existingTable = tables.find(t => t.name === fileName);
         if (!existingTable) {
-          const sample = rawData[0] || {};
-          // Use any[] to prevent type inference issues when adding default/primaryKey properties during unshift later
-          const cols: any[] = Object.keys(sample).map(k => {
-            const key = k.trim().replace(/[^a-z0-9]/gi, '_').toLowerCase();
+          // Criar nova tabela automaticamente
+          const sample = data[0] || {};
+          const cols = Object.keys(sample).map(k => {
+            const key = k.trim().replace(/ /g, '_').toLowerCase();
             let type = 'text';
             const val = sample[k];
-            if (!isNaN(Number(val)) && typeof val !== 'boolean') type = 'numeric';
-            if (typeof val === 'string' && !isNaN(Date.parse(val)) && val.includes('-')) type = 'timestamptz';
+            if (typeof val === 'number') type = 'numeric';
+            if (val instanceof Date || (typeof val === 'string' && !isNaN(Date.parse(val)) && val.includes('-'))) type = 'timestamptz';
             return { name: key, type, nullable: true };
           });
           
           if (!cols.some(c => c.name === 'id')) {
-            cols.unshift({ name: 'id', type: 'uuid', nullable: false, default: 'gen_random_uuid()', primaryKey: true });
+            cols.unshift({ name: 'id', type: 'uuid', nullable: false });
           }
 
           await fetchWithAuth(`/api/data/${projectId}/tables`, { 
@@ -235,24 +236,24 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
           await fetchTables();
         }
 
-        // Popular dados sanitizando chaves
-        for (const row of rawData) {
+        // Popular dados
+        for (const row of data) {
           const sanitizedRow = Object.fromEntries(
-            Object.entries(row).map(([k, v]) => [k.trim().replace(/[^a-z0-9]/gi, '_').toLowerCase(), v])
+            Object.entries(row).map(([k, v]) => [k.trim().replace(/ /g, '_').toLowerCase(), v])
           );
+          // Se não houver ID no row e a tabela tiver ID, gerar um
+          if (!sanitizedRow.id) sanitizedRow.id = crypto.randomUUID();
           
-          // Se for uma tabela existente mas o row não tem ID e o banco exige, gera um.
-          // O backend tratará defaults se omitido.
           await fetchWithAuth(`/api/data/${projectId}/tables/${targetTable}/rows`, { 
             method: 'POST', 
             body: JSON.stringify({ data: sanitizedRow }) 
-          }).catch(e => console.warn('Row skipping error:', e.message));
+          });
         }
 
         setShowImportModal(false);
         setSelectedTable(targetTable);
         fetchTableDetails(targetTable);
-        setSuccessMsg(`Imported data to ${targetTable} successfully.`);
+        setSuccessMsg(`Import successful: ${data.length} records processed.`);
         setTimeout(() => setSuccessMsg(null), 3000);
       };
       reader.readAsBinaryString(file);
@@ -279,6 +280,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
           const val = row[col];
           if (val === null) return 'NULL';
           if (typeof val === 'string') return `'${val.replace(/'/g, "''")}'`;
+          if (val instanceof Date) return `'${val.toISOString()}'`;
           return val;
         }).join(', ');
         return `INSERT INTO public."${selectedTable}" (${columnsStr}) VALUES (${valuesStr});`;
@@ -383,6 +385,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
                     </button>
                   )}
                   <button onClick={() => {
+                    // Pre-fill defaults
                     const initialData: Record<string, string> = {};
                     columns.forEach(c => {
                       if (c.name === 'id' && c.type === 'uuid') initialData[c.name] = crypto.randomUUID();
@@ -395,7 +398,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
                   <div className="relative">
                     <button onClick={handleExportClick} className="bg-white text-slate-700 border border-slate-200 px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-slate-50 transition-all"><Download size={14} /> EXPORT</button>
                     {showExportDropdown && (
-                      <div className="absolute right-0 top-full mt-2 bg-white border border-slate-200 rounded-3xl shadow-2xl p-2 z-[60] w-64 animate-in slide-in-from-top-2">
+                      <div className="absolute right-0 top-full mt-2 bg-white border border-slate-200 rounded-3xl shadow-2xl p-2 z-[60] w-56 animate-in slide-in-from-top-2">
                         <button onClick={() => handleExport('csv')} className="w-full text-left px-5 py-4 text-[14px] font-black uppercase tracking-widest text-slate-600 hover:bg-slate-50 rounded-2xl flex items-center gap-3">.CSV Spreadsheet</button>
                         <button onClick={() => handleExport('sql')} className="w-full text-left px-5 py-4 text-[14px] font-black uppercase tracking-widest text-slate-600 hover:bg-slate-50 rounded-2xl flex items-center gap-3">.SQL Dump</button>
                       </div>
@@ -486,9 +489,9 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         </main>
       </div>
 
-      {/* Custom Context Menu fixado */}
+      {/* Custom Context Menu */}
       {contextMenu && (
-        <div className="fixed z-[200] bg-white border border-slate-200 shadow-[0_30px_60px_rgba(0,0,0,0.15)] rounded-[2.5rem] p-3 w-64 animate-in fade-in zoom-in-95" style={{ top: contextMenu.y, left: contextMenu.x }}>
+        <div className="fixed z-[200] bg-white border border-slate-200 shadow-[0_30px_60px_rgba(0,0,0,0.1)] rounded-[2.5rem] p-3 w-64 animate-in fade-in zoom-in-95" style={{ top: contextMenu.y, left: contextMenu.x }}>
           <button onClick={() => copyToClipboard(contextMenu.table)} className="w-full flex items-center gap-4 px-5 py-4 text-xs font-bold text-slate-600 hover:bg-slate-50 rounded-2xl transition-all"><Copy size={16} /> Copy Name</button>
           <button onClick={async () => {
             const data = await fetchWithAuth(`/api/data/${projectId}/tables/${contextMenu.table}/sql`);
@@ -503,7 +506,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         </div>
       )}
 
-      {/* Modals Section */}
+      {/* Modals */}
       {showRowModal && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[100] flex items-center justify-center p-8">
           <div className="bg-white rounded-[3.5rem] w-full max-w-2xl p-12 shadow-2xl border border-slate-100 animate-in zoom-in-95">
@@ -593,7 +596,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
                     fetchTables();
                   } catch (e: any) { setError(e.message); }
                 } : handleBulkDelete} 
-                disabled={ (deleteConfirm.rowCount > 3 || deleteConfirm.mode === 'rows') && deleteConfirm.confirmInput !== (deleteConfirm.mode === 'table' ? deleteConfirm.table : (selectedTable || '')) }
+                disabled={ (deleteConfirm.rowCount > 3 || deleteConfirm.mode === 'rows') && deleteConfirm.confirmInput !== (deleteConfirm.mode === 'table' ? deleteConfirm.table : selectedTable) }
                 className="flex-[2] py-5 bg-rose-600 text-white rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl disabled:opacity-30 transition-all hover:bg-rose-700"
               >
                 Confirm Purge
@@ -607,7 +610,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[300] flex items-center justify-center p-8">
           <div className="bg-white rounded-[3rem] w-full max-w-md p-10 animate-in zoom-in-95 shadow-2xl">
             <h4 className="text-2xl font-black text-slate-900 tracking-tight mb-8 uppercase tracking-widest">Rename Identifier</h4>
-            <input value={renameState.newName} onChange={(e) => setRenameState({ ...renameState, newName: e.target.value.toLowerCase().replace(/[^a-z0-9_]/gi, '_') })} className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-4 px-6 text-sm font-bold mb-8 outline-none focus:ring-4 focus:ring-indigo-500/20" />
+            <input value={renameState.newName} onChange={(e) => setRenameState({ ...renameState, newName: e.target.value.toLowerCase().replace(/ /g, '_') })} className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-4 px-6 text-sm font-bold mb-8 outline-none focus:ring-4 focus:ring-indigo-500/20" />
             <div className="flex gap-4">
               <button onClick={() => setRenameState({ ...renameState, active: false })} className="flex-1 py-4 text-xs font-black text-slate-400 uppercase tracking-widest">Abort</button>
               <button onClick={async () => {
