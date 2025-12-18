@@ -148,7 +148,14 @@ app.get('/:slug/assets', authenticateAdmin, async (req, res) => {
 });
 
 app.post('/:slug/assets', authenticateAdmin, async (req, res) => {
-  const { name, type, parent_id, metadata } = req.body;
+  const { id, name, type, parent_id, metadata } = req.body;
+  if (id) {
+    const result = await systemPool.query(
+      'UPDATE system.project_assets SET name = $1, type = $2, parent_id = $3, metadata = $4 WHERE id = $5 AND project_slug = $6 RETURNING *',
+      [name, type, parent_id, JSON.stringify(metadata || {}), id, req.params.slug]
+    );
+    return res.json(result.rows[0]);
+  }
   const result = await systemPool.query(
     'INSERT INTO system.project_assets (project_slug, name, type, parent_id, metadata) VALUES ($1, $2, $3, $4, $5) RETURNING *',
     [req.params.slug, name, type, parent_id, JSON.stringify(metadata || {})]

@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Code2, 
@@ -25,7 +26,10 @@ import {
   Cpu,
   RefreshCw,
   Layout,
-  AlertCircle
+  AlertCircle,
+  Edit,
+  Edit2,
+  BookOpen
 } from 'lucide-react';
 
 type AssetType = 'rpc' | 'trigger' | 'cron' | 'folder';
@@ -37,11 +41,11 @@ interface ProjectAsset {
   parent_id: string | null;
   metadata: {
     notes?: string;
+    sql?: string;
     db_object_name?: string;
   };
 }
 
-// Explicitly define the tree node type to fix recursive inference issues
 interface AssetTreeNode extends ProjectAsset {
   children: AssetTreeNode[];
 }
@@ -63,6 +67,11 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+
+  // Context Menu & Renaming State
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, item: AssetTreeNode } | null>(null);
+  const [renamingItem, setRenamingItem] = useState<ProjectAsset | null>(null);
+  const [renameValue, setRenameValue] = useState('');
 
   const fetchWithAuth = useCallback(async (url: string, options: any = {}) => {
     const token = localStorage.getItem('cascata_token');
@@ -86,7 +95,6 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
         fetchWithAuth(`/api/data/${projectId}/triggers`)
       ]);
       setAssets(assetsData);
-      // Combine all DB objects for discovery
       setDbObjects([...functionsData.map((f:any) => ({...f, type: 'rpc'})), ...triggersData.map((t:any) => ({...t, type: 'trigger'}))]);
     } catch (err: any) {
       setError(err.message);
@@ -97,6 +105,9 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
 
   useEffect(() => {
     fetchData();
+    const hide = () => setContextMenu(null);
+    window.addEventListener('click', hide);
+    return () => window.removeEventListener('click', hide);
   }, [projectId]);
 
   const handleCreateAsset = async (name: string, type: AssetType, parentId: string | null = null) => {
@@ -106,8 +117,12 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
         body: JSON.stringify({ name, type, parent_id: parentId })
       });
       setAssets([...assets, newAsset]);
-      setSelectedAsset(newAsset);
-      setSuccessMsg(`${type.toUpperCase()} asset initialized.`);
+      if (type !== 'folder') {
+        setSelectedAsset(newAsset);
+        setEditorSql('-- Writing high-performance SQL...');
+        setNotes('');
+      }
+      setSuccessMsg(`${type.toUpperCase()} initialized.`);
       setTimeout(() => setSuccessMsg(null), 2000);
     } catch (err: any) {
       setError(err.message);
@@ -118,29 +133,59 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
     if (!selectedAsset) return;
     setExecuting(true);
     try {
-      // Execute the SQL to save to DB
+      // 1. Run the SQL on the DB
       await fetchWithAuth(`/api/data/${projectId}/query`, {
         method: 'POST',
         body: JSON.stringify({ sql: editorSql })
       });
       
-      // Update metadata (notes) in system
+      // 2. Update metadata (Notes and SQL persistence) for THIS asset specifically (using ID)
       const updated = await fetchWithAuth(`/api/data/${projectId}/assets`, {
         method: 'POST',
         body: JSON.stringify({ 
           ...selectedAsset, 
-          metadata: { ...selectedAsset.metadata, notes } 
+          metadata: { ...selectedAsset.metadata, notes, sql: editorSql } 
         })
       });
       
       setAssets(assets.map(a => a.id === updated.id ? updated : a));
-      setSuccessMsg('Object compiled and committed successfully.');
+      setSelectedAsset(updated); // Maintain selection on the updated object
+      setSuccessMsg('Object compiled and committed.');
       setTimeout(() => setSuccessMsg(null), 2000);
-      fetchData(); // Refresh DB object definitions
+      fetchData(); // Sync database discovery
     } catch (err: any) {
       setError(err.message);
     } finally {
       setExecuting(false);
+    }
+  };
+
+  const handleDeleteAsset = async (id: string) => {
+    try {
+      await fetchWithAuth(`/api/data/${projectId}/assets/${id}`, { method: 'DELETE' });
+      setAssets(assets.filter(a => a.id !== id));
+      if (selectedAsset?.id === id) setSelectedAsset(null);
+      setSuccessMsg('Asset purged.');
+      setTimeout(() => setSuccessMsg(null), 2000);
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const handleRename = async () => {
+    if (!renamingItem || !renameValue) return;
+    try {
+      const updated = await fetchWithAuth(`/api/data/${projectId}/assets`, {
+        method: 'POST',
+        body: JSON.stringify({ ...renamingItem, name: renameValue })
+      });
+      setAssets(assets.map(a => a.id === updated.id ? updated : a));
+      if (selectedAsset?.id === updated.id) setSelectedAsset(updated);
+      setRenamingItem(null);
+      setSuccessMsg('Renamed successfully.');
+      setTimeout(() => setSuccessMsg(null), 2000);
+    } catch (err: any) {
+      setError(err.message);
     }
   };
 
@@ -151,7 +196,7 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
       const params = JSON.parse(testParams);
       const sql = selectedAsset.type === 'rpc' 
         ? `SELECT public.${selectedAsset.name}(${Object.values(params).map(v => typeof v === 'string' ? `'${v}'` : v).join(', ')})`
-        : `-- Logic test for ${selectedAsset.type}`;
+        : `-- Manual test not applicable for ${selectedAsset.type}`;
         
       const result = await fetchWithAuth(`/api/data/${projectId}/query`, {
         method: 'POST',
@@ -180,7 +225,6 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   }, [assets, activeContext]);
 
   const treeData = useMemo(() => {
-    // FIX: Added explicit return type AssetTreeNode[] to buildTree for TS recursive inference
     const buildTree = (parentId: string | null = null): AssetTreeNode[] => {
       return filteredAssets
         .filter(a => a.parent_id === parentId)
@@ -211,10 +255,15 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
             if (isFolder) toggleFolder(item.id);
             else {
               setSelectedAsset(item);
-              const dbObj = dbObjects.find(o => o.name === item.name);
-              setEditorSql(dbObj?.definition || `-- Define ${item.name}...`);
+              setEditorSql(item.metadata?.sql || `-- Define ${item.name}...`);
               setNotes(item.metadata?.notes || '');
+              setTestResult(null);
             }
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setContextMenu({ x: e.clientX, y: e.clientY, item });
           }}
           className={`flex items-center gap-2 px-3 py-2.5 rounded-xl cursor-pointer transition-all group ${isSelected ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100' : 'text-slate-600 hover:bg-slate-50'}`}
         >
@@ -227,15 +276,16 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
             <FileCode size={18} className={isSelected ? 'text-white' : 'text-slate-400'} />
           )}
           <span className="text-sm font-bold truncate">{item.name}</span>
-          {!isFolder && (
-            <div className={`ml-auto opacity-0 group-hover:opacity-100 transition-opacity ${isSelected ? 'text-white' : 'text-slate-300'}`}>
-              <MoreVertical size={14} />
-            </div>
-          )}
+          <div className={`ml-auto opacity-0 group-hover:opacity-100 transition-opacity ${isSelected ? 'text-white' : 'text-slate-300'}`}>
+            <MoreVertical size={14} />
+          </div>
         </div>
         {isFolder && isExpanded && (
           <div className="pl-6 mt-1 space-y-1">
             {item.children.map(renderTreeItem)}
+            {item.children.length === 0 && (
+              <div className="px-3 py-1.5 text-[9px] font-bold text-slate-300 uppercase tracking-widest italic">Empty Folder</div>
+            )}
             <button 
               onClick={(e) => { e.stopPropagation(); handleCreateAsset('new_' + activeContext, activeContext, item.id); }}
               className="w-full flex items-center gap-2 px-3 py-2 text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-indigo-600 transition-colors"
@@ -249,13 +299,57 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   };
 
   return (
-    <div className="flex h-full flex-col bg-[#FDFDFD] overflow-hidden">
+    <div className="flex h-full flex-col bg-[#FDFDFD] overflow-hidden relative">
+      {/* Asset Context Menu */}
+      {contextMenu && (
+        <div 
+          className="fixed z-[500] bg-white border border-slate-200 shadow-2xl rounded-2xl p-2 w-56 animate-in fade-in zoom-in-95" 
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button onClick={() => { setRenamingItem(contextMenu.item); setRenameValue(contextMenu.item.name); setContextMenu(null); }} className="w-full flex items-center gap-3 px-4 py-3 text-xs font-bold text-slate-600 hover:bg-slate-50 rounded-xl transition-all"><Edit size={14}/> Rename</button>
+          {contextMenu.item.type === 'folder' && (
+            <button onClick={() => { handleCreateAsset('sub_folder', 'folder', contextMenu.item.id); setContextMenu(null); }} className="w-full flex items-center gap-3 px-4 py-3 text-xs font-bold text-slate-600 hover:bg-slate-50 rounded-xl transition-all"><FolderPlus size={14}/> Create Subfolder</button>
+          )}
+          <div className="h-[1px] bg-slate-100 my-1"></div>
+          <button 
+            disabled={contextMenu.item.type === 'folder' && contextMenu.item.children.length > 0}
+            onClick={() => { handleDeleteAsset(contextMenu.item.id); setContextMenu(null); }} 
+            className={`w-full flex items-center justify-between px-4 py-3 text-xs font-black transition-all rounded-xl ${contextMenu.item.type === 'folder' && contextMenu.item.children.length > 0 ? 'text-slate-300 cursor-not-allowed' : 'text-rose-600 hover:bg-rose-50'}`}
+          >
+            <div className="flex items-center gap-3"><Trash2 size={14}/> Delete</div>
+            {/* Fix: Lucide icons do not support 'title' prop directly in types, wrapping in a span instead to provide tooltip functionality safely */}
+            {contextMenu.item.type === 'folder' && contextMenu.item.children.length > 0 && <span title="Folder must be empty"><Info size={12} /></span>}
+          </button>
+        </div>
+      )}
+
+      {/* Rename Modal */}
+      {renamingItem && (
+        <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-[600] flex items-center justify-center p-6">
+          <div className="bg-white rounded-3xl p-8 w-full max-w-sm shadow-2xl border border-slate-100">
+            <h4 className="text-lg font-black text-slate-900 tracking-tight mb-4">Rename Asset</h4>
+            <input 
+              autoFocus
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-3 px-5 text-sm font-bold text-slate-800 outline-none focus:ring-4 focus:ring-indigo-500/10 mb-6"
+              onKeyDown={(e) => e.key === 'Enter' && handleRename()}
+            />
+            <div className="flex gap-4">
+              <button onClick={() => setRenamingItem(null)} className="flex-1 py-3 text-xs font-black text-slate-400 uppercase tracking-widest">Cancel</button>
+              <button onClick={handleRename} className="flex-[2] py-3 bg-indigo-600 text-white rounded-2xl text-xs font-black uppercase tracking-widest shadow-lg shadow-indigo-100">Confirm Rename</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Notifications */}
       {(error || successMsg) && (
         <div className={`fixed top-8 left-1/2 -translate-x-1/2 z-[400] p-5 rounded-3xl shadow-2xl flex items-center gap-4 animate-in slide-in-from-top-4 ${error ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
           {error ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
           <span className="text-sm font-black tracking-tight">{error || successMsg}</span>
-          <button onClick={() => { setError(null); setSuccessMsg(null); }} className="ml-4 opacity-50"><X size={16} /></button>
+          <button onClick={() => { setError(null); setSuccessMsg(null); }} className="ml-4 opacity-50 hover:opacity-100"><X size={16} /></button>
         </div>
       )}
 
@@ -263,13 +357,13 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
       <header className="border-b border-slate-200 px-10 py-6 bg-white flex items-center justify-between shadow-sm z-10">
         <div className="flex items-center gap-4">
           <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-xl"><Cpu size={24} /></div>
-          <div><h2 className="text-2xl font-black text-slate-900 tracking-tighter leading-tight">Logic Engine</h2><p className="text-[10px] text-indigo-600 font-bold uppercase tracking-[0.2em]">Project Orchestration</p></div>
+          <div><h2 className="text-2xl font-black text-slate-900 tracking-tighter leading-tight">Logic Engine</h2><p className="text-[10px] text-indigo-600 font-bold uppercase tracking-[0.2em]">Asset Orchestration</p></div>
         </div>
         <div className="flex items-center gap-8">
           <div className="flex items-center bg-slate-100 p-1.5 rounded-2xl">
-            <button onClick={() => setActiveContext('rpc')} className={`px-8 py-2.5 text-xs font-black rounded-xl transition-all flex items-center gap-2 ${activeContext === 'rpc' ? 'bg-white shadow-lg text-indigo-600' : 'text-slate-500'}`}><Code2 size={16}/> RPC</button>
-            <button onClick={() => setActiveContext('trigger')} className={`px-8 py-2.5 text-xs font-black rounded-xl transition-all flex items-center gap-2 ${activeContext === 'trigger' ? 'bg-white shadow-lg text-indigo-600' : 'text-slate-500'}`}><Zap size={16}/> TRIGGERS</button>
-            <button onClick={() => setActiveContext('cron')} className={`px-8 py-2.5 text-xs font-black rounded-xl transition-all flex items-center gap-2 ${activeContext === 'cron' ? 'bg-white shadow-lg text-indigo-600' : 'text-slate-500'}`}><Clock size={16}/> CRON JOBS</button>
+            <button onClick={() => { setActiveContext('rpc'); setSelectedAsset(null); }} className={`px-8 py-2.5 text-xs font-black rounded-xl transition-all flex items-center gap-2 ${activeContext === 'rpc' ? 'bg-white shadow-lg text-indigo-600' : 'text-slate-500'}`}><Code2 size={16}/> RPC</button>
+            <button onClick={() => { setActiveContext('trigger'); setSelectedAsset(null); }} className={`px-8 py-2.5 text-xs font-black rounded-xl transition-all flex items-center gap-2 ${activeContext === 'trigger' ? 'bg-white shadow-lg text-indigo-600' : 'text-slate-500'}`}><Zap size={16}/> TRIGGERS</button>
+            <button onClick={() => { setActiveContext('cron'); setSelectedAsset(null); }} className={`px-8 py-2.5 text-xs font-black rounded-xl transition-all flex items-center gap-2 ${activeContext === 'cron' ? 'bg-white shadow-lg text-indigo-600' : 'text-slate-500'}`}><Clock size={16}/> CRON JOBS</button>
           </div>
           <button onClick={() => handleCreateAsset('new_folder', 'folder')} className="p-3 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-2xl transition-all" title="New Folder"><FolderPlus size={24} /></button>
           <button onClick={() => handleCreateAsset('new_' + activeContext, activeContext)} className="bg-indigo-600 text-white px-8 py-3.5 rounded-2xl text-xs font-black flex items-center gap-3 hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100"><Plus size={20} /> NEW {activeContext.toUpperCase()}</button>
@@ -280,7 +374,7 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
         {/* Navigation Sidebar */}
         <aside className="w-80 border-r border-slate-200 bg-white flex flex-col shrink-0">
           <div className="p-6">
-            <div className="relative group"><Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors" size={16} /><input placeholder="Search assets..." className="w-full pl-12 pr-4 py-3.5 text-sm bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all" /></div>
+            <div className="relative group"><Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors" size={16} /><input placeholder="Search logic registry..." className="w-full pl-12 pr-4 py-3.5 text-sm bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all" /></div>
           </div>
           <div className="flex-1 overflow-y-auto px-4 pb-10 space-y-1">
             <div className="flex items-center justify-between px-3 py-4"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{activeContext} Registry</span><RefreshCw size={12} className={`text-slate-300 hover:text-indigo-600 cursor-pointer ${loading ? 'animate-spin' : ''}`} onClick={fetchData} /></div>
@@ -294,18 +388,18 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
             <div className="flex-1 flex flex-col">
               <div className="bg-white border-b border-slate-200 px-10 py-5 flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-6">
-                  <div className="flex flex-col"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Active Object</span><span className="text-xl font-black text-slate-900 tracking-tight">{selectedAsset.name}</span></div>
+                  <div className="flex flex-col"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Target Asset</span><span className="text-xl font-black text-slate-900 tracking-tight font-mono">{selectedAsset.name}</span></div>
                   <div className="h-10 w-[1px] bg-slate-200"></div>
                   <div className="flex items-center gap-2"><span className={`w-2.5 h-2.5 rounded-full ${dbObjects.some(o => o.name === selectedAsset.name) ? 'bg-emerald-500' : 'bg-slate-200 animate-pulse'}`}></span><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{dbObjects.some(o => o.name === selectedAsset.name) ? 'Synchronized' : 'Draft Mode'}</span></div>
                 </div>
                 <div className="flex items-center gap-4">
-                  <button onClick={handleSaveObject} disabled={executing} className="bg-indigo-600 text-white px-8 py-3 rounded-2xl text-xs font-black flex items-center gap-3 hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100 disabled:opacity-50">{executing ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} SAVE & DEPLOY</button>
+                  <button onClick={handleSaveObject} disabled={executing} className="bg-indigo-600 text-white px-8 py-3 rounded-2xl text-xs font-black flex items-center gap-3 hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100 disabled:opacity-50">{executing ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} COMPILE & DEPLOY</button>
                 </div>
               </div>
 
               <div className="flex-1 flex overflow-hidden">
                 {/* Editor Column */}
-                <div className="flex-1 flex flex-col border-r border-slate-200">
+                <div className="flex-1 flex flex-col border-r border-slate-200 relative">
                   <div className="flex-1 flex relative">
                     <textarea 
                       value={editorSql} 
@@ -313,41 +407,48 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
                       className="flex-1 bg-slate-950 text-emerald-400 p-12 font-mono text-base outline-none resize-none spellcheck-false" 
                     />
                     
-                    {/* Documentation Column (15%) */}
-                    <div className="w-[180px] bg-slate-900/50 border-l border-white/5 flex flex-col p-6 shrink-0">
-                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4 flex items-center gap-2"><Book size={12}/> Documentation</span>
+                    {/* Documentation Column (15%) - Darkened as requested */}
+                    <div className="w-[200px] bg-[#020617] border-l border-white/5 flex flex-col p-6 shrink-0 shadow-inner">
+                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4 flex items-center gap-2 border-b border-white/5 pb-4"><BookOpen size={14} className="text-indigo-400" /> Documentation</span>
                        <textarea 
                         value={notes} 
                         onChange={(e) => setNotes(e.target.value)}
-                        placeholder="Project notes and logic description..." 
-                        className="flex-1 bg-transparent text-slate-400 text-xs font-medium leading-relaxed outline-none resize-none placeholder:text-slate-600" 
+                        placeholder="Project logic description..." 
+                        className="flex-1 bg-transparent text-slate-400 text-xs font-medium leading-relaxed outline-none resize-none placeholder:text-slate-700" 
                        />
+                       <div className="mt-6 p-4 bg-indigo-500/5 rounded-2xl border border-indigo-500/10">
+                         <p className="text-[9px] text-indigo-400 font-black leading-relaxed">Persisted in system metadata table.</p>
+                       </div>
                     </div>
                   </div>
 
-                  {/* Tester Panel (Next to Editor - Bottom/Right area) */}
+                  {/* Tester Panel */}
                   <div className="h-96 border-t border-slate-200 bg-white p-10 flex gap-10 overflow-hidden shrink-0">
                     <div className="flex-1 flex flex-col gap-4">
-                      <div className="flex items-center justify-between"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Layout size={14}/> Test Payload (JSON)</span></div>
+                      <div className="flex items-center justify-between"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Layout size={14} className="text-indigo-600"/> Test Payload (JSON)</span></div>
                       <textarea 
                         value={testParams} 
                         onChange={(e) => setTestParams(e.target.value)}
-                        className="flex-1 bg-slate-50 border border-slate-200 rounded-[2rem] p-6 font-mono text-sm outline-none focus:ring-4 focus:ring-indigo-500/5 transition-all" 
+                        className="flex-1 bg-slate-50 border border-slate-200 rounded-[2.5rem] p-8 font-mono text-sm outline-none focus:ring-4 focus:ring-indigo-500/5 transition-all shadow-inner" 
+                        placeholder='{ "key": "value" }'
                       />
                     </div>
-                    <div className="w-[450px] flex flex-col gap-4">
+                    <div className="w-[480px] flex flex-col gap-4">
                       <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Terminal size={14}/> Output Manifest</span>
+                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Terminal size={14} className="text-emerald-500"/> Output Manifest</span>
                         <div className="flex items-center gap-2">
-                          <button onClick={copyCurl} title="Copy cURL" className="p-2 text-slate-400 hover:text-indigo-600 transition-colors"><Copy size={16}/></button>
-                          <button onClick={executeTest} disabled={executing} className="bg-emerald-500 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/20">{executing ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Run Logic</button>
+                          {selectedAsset.type === 'rpc' && <button onClick={copyCurl} title="Copy cURL" className="p-3 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"><Copy size={16}/></button>}
+                          <button onClick={executeTest} disabled={executing} className="bg-emerald-500 text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-3 hover:bg-emerald-600 transition-all shadow-xl shadow-emerald-500/20">{executing ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Run Logic</button>
                         </div>
                       </div>
-                      <div className="flex-1 bg-slate-900 rounded-[2rem] p-6 font-mono text-xs text-slate-300 overflow-auto border border-white/5">
+                      <div className="flex-1 bg-slate-900 rounded-[2.5rem] p-8 font-mono text-xs text-slate-300 overflow-auto border border-white/5 shadow-2xl">
                         {testResult ? (
-                          <pre>{JSON.stringify(testResult, null, 2)}</pre>
+                          <pre className="whitespace-pre-wrap">{JSON.stringify(testResult, null, 2)}</pre>
                         ) : (
-                          <div className="h-full flex flex-col items-center justify-center text-slate-600 gap-3 opacity-50"><Terminal size={32}/><span className="text-[10px] uppercase font-black tracking-widest">Awaiting execution...</span></div>
+                          <div className="h-full flex flex-col items-center justify-center text-slate-700 gap-4 opacity-40">
+                            <Terminal size={48}/>
+                            <span className="text-[10px] uppercase font-black tracking-widest">Awaiting execution...</span>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -356,14 +457,20 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
               </div>
             </div>
           ) : (
-            <div className="flex-1 flex flex-col items-center justify-center text-slate-300 p-20 text-center">
-              <div className="w-32 h-32 bg-slate-50 rounded-[3rem] flex items-center justify-center text-slate-200 mb-8"><Code2 size={64} /></div>
-              <h3 className="text-3xl font-black text-slate-900 tracking-tighter">Business Logic Workspace</h3>
-              <p className="text-slate-400 mt-4 max-w-sm font-medium leading-relaxed">Select an RPC function, trigger or cron job from the registry to begin architecting your project logic.</p>
-              <div className="grid grid-cols-1 gap-4 mt-12 w-full max-w-lg">
-                 <div className="bg-white border border-slate-200 rounded-3xl p-6 flex items-center gap-6 text-left hover:shadow-xl transition-all group cursor-pointer" onClick={() => handleCreateAsset('new_rpc', 'rpc')}>
-                    <div className="w-14 h-14 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all"><Plus size={24}/></div>
-                    <div><h4 className="font-black text-slate-900 text-sm uppercase tracking-tight">Create RPC Function</h4><p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Expose SQL as RESTful endpoints</p></div>
+            <div className="flex-1 flex flex-col items-center justify-center text-slate-300 p-20 text-center relative overflow-hidden">
+              <div className="absolute inset-0 bg-gradient-to-b from-indigo-500/5 to-transparent pointer-events-none"></div>
+              <div className="w-36 h-36 bg-white rounded-[3.5rem] flex items-center justify-center text-indigo-600 mb-10 shadow-2xl border border-slate-100"><Code2 size={72} /></div>
+              <h3 className="text-4xl font-black text-slate-900 tracking-tighter">Business Logic Workspace</h3>
+              <p className="text-slate-400 mt-6 max-w-sm font-medium leading-relaxed">Select an asset from the logic registry or initialize a new interface to begin orchestration.</p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-16 w-full max-w-2xl relative z-10">
+                 <div onClick={() => handleCreateAsset('new_rpc', 'rpc')} className="bg-white border border-slate-200 rounded-[2.5rem] p-8 flex items-center gap-6 text-left hover:shadow-2xl hover:border-indigo-300 transition-all group cursor-pointer">
+                    <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-[1.5rem] flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-sm"><Code2 size={28}/></div>
+                    <div><h4 className="font-black text-slate-900 text-sm uppercase tracking-tight leading-none">Create RPC</h4><p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-2">Map SQL to REST endpoints</p></div>
+                 </div>
+                 <div onClick={() => handleCreateAsset('new_trigger', 'trigger')} className="bg-white border border-slate-200 rounded-[2.5rem] p-8 flex items-center gap-6 text-left hover:shadow-2xl hover:border-emerald-300 transition-all group cursor-pointer">
+                    <div className="w-16 h-16 bg-emerald-50 text-emerald-600 rounded-[1.5rem] flex items-center justify-center group-hover:bg-emerald-600 group-hover:text-white transition-all shadow-sm"><Zap size={28}/></div>
+                    <div><h4 className="font-black text-slate-900 text-sm uppercase tracking-tight leading-none">Event Trigger</h4><p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-2">Automate row-level actions</p></div>
                  </div>
               </div>
             </div>
