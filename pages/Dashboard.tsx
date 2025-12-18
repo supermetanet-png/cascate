@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, ExternalLink, Activity, Database, Clock, MoreVertical, Terminal, Loader2 } from 'lucide-react';
+import { Plus, Search, ExternalLink, Activity, Database, Clock, MoreVertical, Terminal, Loader2, Server, Key, Shield } from 'lucide-react';
 import { Project } from '../types';
 
 interface DashboardProps {
@@ -21,18 +21,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectProject }) => {
       const data = await response.json();
       setProjects(data);
     } catch (err) {
-      console.error('Error fetching projects');
+      console.error('Project Registry Sync Failure');
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    fetchProjects();
-  }, []);
+  useEffect(() => { fetchProjects(); }, []);
 
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLoading(true);
     try {
       const response = await fetch('/api/control/projects', {
         method: 'POST',
@@ -48,82 +47,97 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectProject }) => {
         fetchProjects();
       }
     } catch (err) {
-      console.error('Error creating project');
+      console.error('Provisioning engine failed');
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div className="p-8 lg:p-12 max-w-7xl mx-auto w-full">
-      <div className="flex items-end justify-between mb-12">
+    <div className="p-12 lg:p-20 max-w-7xl mx-auto w-full min-h-screen">
+      <div className="flex flex-col md:flex-row md:items-end justify-between mb-20 gap-8">
         <div>
-          <h1 className="text-4xl font-black text-slate-900 tracking-tight">Project Registry</h1>
-          <p className="text-slate-500 mt-2 text-lg">Your isolated, production-grade cloud environments.</p>
+          <h1 className="text-6xl font-black text-slate-900 tracking-tighter mb-4">Registry</h1>
+          <p className="text-slate-400 text-xl font-medium max-w-2xl leading-relaxed">Infrastructure-as-a-Code orchestration for multi-tenant PostgreSQL environments.</p>
         </div>
-        <div className="flex gap-3">
-          <button onClick={() => setShowCreateModal(true)} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-xl font-bold flex items-center gap-2 transition-all shadow-xl shadow-indigo-100 hover:-translate-y-0.5">
-            <Plus size={20} /> Create Project
-          </button>
-        </div>
+        <button 
+          onClick={() => setShowCreateModal(true)} 
+          className="bg-indigo-600 hover:bg-indigo-700 text-white px-10 py-5 rounded-[1.8rem] font-black flex items-center gap-3 transition-all shadow-[0_20px_40px_rgba(79,70,229,0.3)] hover:-translate-y-1 active:scale-95 text-lg"
+        >
+          <Plus size={28} /> Provision Instance
+        </button>
       </div>
 
-      {loading ? (
-        <div className="flex flex-col items-center justify-center py-24 text-slate-400">
-          <Loader2 className="animate-spin mb-4" size={48} />
-          <p className="font-medium">Loading your instances...</p>
+      {loading && projects.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-40 text-slate-400">
+          <Loader2 className="animate-spin mb-6 text-indigo-600" size={64} />
+          <p className="font-black text-lg uppercase tracking-widest">Synchronizing Registry...</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10 pb-40">
           {projects.map((project) => (
             <ProjectCard key={project.id} project={project} onClick={() => onSelectProject(project.slug)} />
           ))}
           
           <button 
             onClick={() => setShowCreateModal(true)}
-            className="border-2 border-dashed border-slate-200 rounded-[2rem] p-8 flex flex-col items-center justify-center text-slate-400 hover:border-indigo-300 hover:text-indigo-500 hover:bg-indigo-50/30 transition-all group"
+            className="border-4 border-dashed border-slate-200 rounded-[3rem] p-12 flex flex-col items-center justify-center text-slate-300 hover:border-indigo-400 hover:text-indigo-500 hover:bg-indigo-50/50 transition-all group overflow-hidden relative"
           >
-            <div className="w-16 h-16 rounded-3xl border-2 border-dashed border-slate-200 flex items-center justify-center mb-6 group-hover:border-indigo-300 group-hover:scale-110 transition-all duration-300">
-              <Plus size={32} />
+            <div className="w-24 h-24 rounded-[2rem] border-4 border-dashed border-slate-200 flex items-center justify-center mb-8 group-hover:border-indigo-400 group-hover:scale-110 transition-all duration-500">
+              <Plus size={48} />
             </div>
-            <span className="font-bold text-lg">Provision New Instance</span>
-            <p className="text-sm mt-1 text-slate-400">Dedicated Schema & Keys</p>
+            <span className="font-black text-2xl tracking-tighter">New Instance</span>
+            <p className="text-sm font-bold uppercase tracking-widest mt-2 opacity-60">Physical Schema Isolation</p>
           </button>
         </div>
       )}
 
-      {/* Modal de Criação */}
+      {/* Provisioning Modal (Robust) */}
       {showCreateModal && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-6">
-          <div className="bg-white rounded-[2.5rem] w-full max-w-lg p-10 shadow-2xl border border-slate-100">
-            <h2 className="text-2xl font-black text-slate-900 mb-2">New Project</h2>
-            <p className="text-slate-500 mb-8">This will provision a new database schema and API gateway.</p>
+        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-2xl z-[100] flex items-center justify-center p-8 animate-in fade-in duration-500">
+          <div className="bg-white rounded-[4rem] w-full max-w-xl p-16 shadow-[0_0_150px_rgba(0,0,0,0.5)] border border-slate-100 animate-in zoom-in-95">
+            <div className="w-20 h-20 bg-indigo-600 rounded-[2rem] flex items-center justify-center text-white mb-10 shadow-2xl">
+              <Server size={32} />
+            </div>
+            <h2 className="text-4xl font-black text-slate-900 mb-4 tracking-tighter">New Infrastructure</h2>
+            <p className="text-slate-500 mb-12 text-lg font-medium leading-relaxed">Creating a new project will provision a dedicated PostgreSQL database and generate unique service keys.</p>
             
-            <form onSubmit={handleCreateProject} className="space-y-6">
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Project Name</label>
+            <form onSubmit={handleCreateProject} className="space-y-8">
+              <div className="space-y-3">
+                <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-1">Instance Name</label>
                 <input 
                   type="text" 
                   value={newProject.name}
                   onChange={(e) => setNewProject({...newProject, name: e.target.value})}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-3 px-4 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-                  placeholder="My SaaS App"
+                  className="w-full bg-slate-100 border-none rounded-3xl py-5 px-8 focus:outline-none focus:ring-4 focus:ring-indigo-500/20 text-xl font-bold text-slate-900 placeholder:text-slate-300"
+                  placeholder="App Production"
                   required
                 />
               </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Database Slug (ID)</label>
-                <input 
-                  type="text" 
-                  value={newProject.slug}
-                  onChange={(e) => setNewProject({...newProject, slug: e.target.value.toLowerCase().replace(/ /g, '-')})}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-3 px-4 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 font-mono text-sm"
-                  placeholder="my-saas-app"
-                  required
-                />
+              <div className="space-y-3">
+                <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-1">Global Slug (ID)</label>
+                <div className="relative">
+                  <Terminal className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
+                  <input 
+                    type="text" 
+                    value={newProject.slug}
+                    onChange={(e) => setNewProject({...newProject, slug: e.target.value.toLowerCase().replace(/ /g, '-')})}
+                    className="w-full bg-slate-100 border-none rounded-3xl py-5 pl-16 pr-8 focus:outline-none focus:ring-4 focus:ring-indigo-500/20 font-mono text-lg text-indigo-600"
+                    placeholder="my-saas-infra"
+                    required
+                  />
+                </div>
               </div>
               
-              <div className="flex gap-4 pt-4">
-                <button type="button" onClick={() => setShowCreateModal(false)} className="flex-1 py-3 text-slate-500 font-bold hover:bg-slate-50 rounded-2xl transition-all">Cancel</button>
-                <button type="submit" className="flex-1 py-3 bg-indigo-600 text-white font-bold rounded-2xl shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all">Provision Instance</button>
+              <div className="flex gap-6 pt-8">
+                <button type="button" onClick={() => setShowCreateModal(false)} className="flex-1 py-6 text-slate-400 font-black hover:bg-slate-100 rounded-3xl transition-all uppercase tracking-widest text-xs">Abort</button>
+                <button 
+                   type="submit" 
+                   disabled={loading}
+                   className="flex-[2] py-6 bg-indigo-600 text-white font-black rounded-3xl shadow-2xl shadow-indigo-500/30 hover:bg-indigo-700 transition-all uppercase tracking-[0.2em] text-xs flex items-center justify-center gap-3"
+                >
+                  {loading ? <Loader2 size={18} className="animate-spin" /> : 'Provision Architecture'}
+                </button>
               </div>
             </form>
           </div>
@@ -134,58 +148,54 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectProject }) => {
 };
 
 const ProjectCard: React.FC<{ project: Project, onClick: () => void }> = ({ project, onClick }) => {
-  const statusColor = {
-    healthy: 'bg-emerald-500',
-    degraded: 'bg-amber-500',
-    error: 'bg-rose-500'
-  }[project.status];
-
   return (
     <div 
       onClick={onClick}
-      className="group relative bg-white border border-slate-200 rounded-[2rem] p-8 hover:shadow-2xl hover:shadow-indigo-500/10 hover:border-indigo-200 transition-all cursor-pointer flex flex-col h-full overflow-hidden"
+      className="group relative bg-white border-2 border-slate-100 rounded-[3.5rem] p-12 hover:shadow-[0_40px_80px_rgba(0,0,0,0.08)] hover:border-indigo-200 transition-all cursor-pointer flex flex-col h-[480px] overflow-hidden"
     >
-      <div className="absolute top-0 left-0 w-2 h-full bg-slate-100 group-hover:bg-indigo-500 transition-colors"></div>
+      <div className="absolute top-0 right-0 p-10 opacity-5 group-hover:scale-150 group-hover:rotate-12 transition-all duration-700">
+        <Database size={180} />
+      </div>
       
-      <div className="flex items-start justify-between mb-8">
-        <div className="w-14 h-14 rounded-2xl bg-slate-50 flex items-center justify-center text-slate-600 group-hover:bg-indigo-600 group-hover:text-white transition-all duration-500 shadow-sm">
-          <Database size={24} />
+      <div className="flex items-start justify-between mb-12 relative z-10">
+        <div className="w-20 h-20 rounded-[1.8rem] bg-slate-900 flex items-center justify-center text-white group-hover:bg-indigo-600 transition-all duration-500 shadow-2xl group-hover:shadow-indigo-500/40">
+          <Database size={32} />
         </div>
-        <div className="flex items-center gap-2">
-          <span className={`w-2.5 h-2.5 rounded-full ${statusColor} animate-pulse`}></span>
-          <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-            {project.status}
-          </span>
+        <div className="flex items-center gap-2 px-4 py-2 bg-emerald-50 rounded-full border border-emerald-100">
+          <div className={`w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse`}></div>
+          <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600">Active</span>
         </div>
       </div>
       
-      <h3 className="text-2xl font-black text-slate-900 group-hover:text-indigo-600 transition-colors mb-2 leading-tight">
-        {project.name}
-      </h3>
-      <p className="text-xs text-slate-400 mb-8 font-mono bg-slate-50 px-2 py-1 rounded inline-block w-fit">
-        ID: {project.slug}
-      </p>
+      <div className="relative z-10">
+        <h3 className="text-4xl font-black text-slate-900 group-hover:text-indigo-600 transition-colors mb-2 tracking-tighter leading-none">
+          {project.name}
+        </h3>
+        <p className="text-sm text-slate-400 font-mono bg-slate-50 px-3 py-1.5 rounded-xl inline-block w-fit mt-4 border border-slate-100">
+          /{project.slug}
+        </p>
+      </div>
       
-      <div className="space-y-4 mt-auto">
-        <div className="flex items-center justify-between text-xs text-slate-500 font-bold uppercase tracking-wider">
-          <div className="flex items-center gap-2">
-            <Activity size={14} className="text-indigo-500" />
-            <span>Mode</span>
+      <div className="mt-auto space-y-5 relative z-10">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+             <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-600"><Key size={14}/></div>
+             <span className="text-xs font-black text-slate-400 uppercase tracking-widest">Isolated Security</span>
           </div>
-          <span className="text-slate-900">Isolated Schema</span>
         </div>
-        <div className="flex items-center justify-between text-xs text-slate-500 font-bold uppercase tracking-wider">
-          <div className="flex items-center gap-2">
-            <Clock size={14} className="text-slate-400" />
-            <span>Region</span>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+             <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600"><Shield size={14}/></div>
+             <span className="text-xs font-black text-slate-400 uppercase tracking-widest">RLS Enabled</span>
           </div>
-          <span className="text-slate-900">Local VPS</span>
         </div>
       </div>
 
-      <div className="mt-8 pt-6 border-t border-slate-100 flex items-center justify-between text-indigo-600 text-sm font-black">
-        <span className="group-hover:translate-x-1 transition-transform inline-block">MANAGE STUDIO</span>
-        <ExternalLink size={18} />
+      <div className="mt-10 pt-8 border-t border-slate-100 flex items-center justify-between text-indigo-600 text-sm font-black relative z-10">
+        <span className="group-hover:translate-x-3 transition-all duration-500 inline-block uppercase tracking-[0.2em] text-xs">Control Instance</span>
+        <div className="w-10 h-10 rounded-full border-2 border-indigo-100 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all">
+          <ExternalLink size={18} />
+        </div>
       </div>
     </div>
   );

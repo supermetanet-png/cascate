@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { Database, Search, Play, Table as TableIcon, Loader2, AlertCircle, CheckCircle2, Plus, Columns, Settings, Trash2, X } from 'lucide-react';
+import { Database, Search, Play, Table as TableIcon, Loader2, AlertCircle, Plus, Columns, Settings, Trash2, X, Terminal, Code } from 'lucide-react';
 
 const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [activeTab, setActiveTab] = useState<'tables' | 'query'>('tables');
@@ -15,7 +15,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [error, setError] = useState<string | null>(null);
   const [showCreateTable, setShowCreateTable] = useState(false);
   
-  // No-Code Table Builder State
+  // Table Builder State
   const [newTableName, setNewTableName] = useState('');
   const [newTableColumns, setNewTableColumns] = useState<any[]>([
     { name: 'id', type: 'uuid', primaryKey: true, nullable: false, default: 'gen_random_uuid()' },
@@ -32,7 +32,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
       setTables(data);
       if (data.length > 0 && !selectedTable) setSelectedTable(data[0].name);
     } catch (err) {
-      setError('Falha ao carregar tabelas');
+      setError('System connection failure');
     } finally {
       setLoading(false);
     }
@@ -50,10 +50,8 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
           headers: { 'Authorization': `Bearer ${localStorage.getItem('cascata_token')}` }
         })
       ]);
-      
       const data = await dataRes.json();
       const cols = await colsRes.json();
-      
       if (data.error) throw new Error(data.error);
       setTableData(data);
       setColumns(cols);
@@ -79,9 +77,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
       const data = await response.json();
       if (data.error) throw new Error(data.error);
       setQueryResult(data);
-      if (data.command === 'CREATE' || data.command === 'DROP' || data.command === 'ALTER') {
-        fetchTables();
-      }
+      if (['CREATE', 'DROP', 'ALTER'].some(cmd => data.command?.includes(cmd))) fetchTables();
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -104,7 +100,6 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
       if (data.error) throw new Error(data.error);
       setShowCreateTable(false);
       setNewTableName('');
-      setNewTableColumns([{ name: 'id', type: 'uuid', primaryKey: true, nullable: false, default: 'gen_random_uuid()' }]);
       fetchTables();
     } catch (err: any) {
       setError(err.message);
@@ -113,194 +108,186 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
     }
   };
 
-  useEffect(() => {
-    fetchTables();
-  }, [projectId]);
-
-  useEffect(() => {
-    if (selectedTable && activeTab === 'tables') {
-      fetchTableDetails(selectedTable);
-    }
-  }, [selectedTable, activeTab]);
+  useEffect(() => { fetchTables(); }, [projectId]);
+  useEffect(() => { if (selectedTable && activeTab === 'tables') fetchTableDetails(selectedTable); }, [selectedTable, activeTab]);
 
   return (
-    <div className="flex h-full flex-col bg-white">
-      <header className="border-b border-slate-200 px-8 py-4 bg-white flex items-center justify-between shadow-sm z-10">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-indigo-600 text-white rounded-xl shadow-lg shadow-indigo-100">
-            <Database size={20} />
+    <div className="flex h-full flex-col bg-[#FDFDFD]">
+      <header className="border-b border-slate-200 px-10 py-6 bg-white flex items-center justify-between shadow-[0_1px_2px_rgba(0,0,0,0.03)] z-10">
+        <div className="flex items-center gap-4">
+          <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-xl">
+            <Database size={24} />
           </div>
           <div>
-            <h2 className="text-xl font-black text-slate-900 tracking-tight">Data Explorer</h2>
-            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">PostgreSQL Instance: {projectId}</p>
+            <h2 className="text-2xl font-black text-slate-900 tracking-tighter">Instance Explorer</h2>
+            <p className="text-[10px] text-indigo-600 font-bold uppercase tracking-[0.2em]">{projectId}</p>
           </div>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center bg-slate-100 p-1 rounded-xl">
+        <div className="flex items-center gap-6">
+          <div className="flex items-center bg-slate-100 p-1.5 rounded-2xl">
             <button 
               onClick={() => setActiveTab('tables')}
-              className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${activeTab === 'tables' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+              className={`px-6 py-2 text-xs font-black rounded-xl transition-all ${activeTab === 'tables' ? 'bg-white shadow-lg text-indigo-600' : 'text-slate-500 hover:text-slate-800'}`}
             >
-              BROWSER
+              DATA BROWSER
             </button>
             <button 
               onClick={() => setActiveTab('query')}
-              className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${activeTab === 'query' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+              className={`px-6 py-2 text-xs font-black rounded-xl transition-all ${activeTab === 'query' ? 'bg-white shadow-lg text-indigo-600' : 'text-slate-500 hover:text-slate-800'}`}
             >
-              SQL EDITOR
+              SQL TERMINAL
             </button>
           </div>
           <button 
             onClick={() => setShowCreateTable(true)}
-            className="bg-slate-900 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 hover:bg-slate-800 transition-all shadow-lg shadow-slate-200"
+            className="bg-indigo-600 text-white px-6 py-3 rounded-2xl text-xs font-black flex items-center gap-2 hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100 hover:-translate-y-0.5"
           >
-            <Plus size={16} /> NEW TABLE
+            <Plus size={18} /> CREATE TABLE
           </button>
         </div>
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        <aside className="w-72 border-r border-slate-200 bg-slate-50/30 flex flex-col">
-          <div className="p-5 border-b border-slate-100">
+        {/* Sidebar Robusta */}
+        <aside className="w-80 border-r border-slate-200 bg-white flex flex-col">
+          <div className="p-6">
             <div className="relative group">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors" size={14} />
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-600 transition-colors" size={16} />
               <input 
-                placeholder="Search tables..." 
-                className="w-full pl-9 pr-3 py-2.5 text-xs bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all shadow-sm" 
+                placeholder="Search resources..." 
+                className="w-full pl-12 pr-4 py-3 text-sm bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all font-medium" 
               />
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-1">
-            <p className="px-3 py-2 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Public Schema</p>
+          <div className="flex-1 overflow-y-auto px-4 pb-10 space-y-1">
+            <div className="flex items-center justify-between px-3 py-4">
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Public Tables</span>
+              <span className="text-[10px] font-mono text-indigo-500 font-bold">{tables.length}</span>
+            </div>
             {tables.map(t => (
               <button 
                 key={t.name}
                 onClick={() => setSelectedTable(t.name)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm transition-all duration-200 ${selectedTable === t.name ? 'bg-indigo-600 text-white font-bold shadow-lg shadow-indigo-100' : 'text-slate-600 hover:bg-white hover:shadow-sm'}`}
+                className={`w-full flex items-center justify-between px-5 py-4 rounded-2xl transition-all duration-300 group ${selectedTable === t.name ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-600 hover:bg-slate-50'}`}
               >
-                <TableIcon size={16} className={selectedTable === t.name ? 'text-white' : 'text-slate-400'} />
-                <span className="truncate">{t.name}</span>
+                <div className="flex items-center gap-4">
+                  <TableIcon size={18} className={selectedTable === t.name ? 'text-white' : 'text-slate-300 group-hover:text-indigo-400'} />
+                  <span className="text-sm font-bold tracking-tight">{t.name}</span>
+                </div>
+                {selectedTable === t.name && <div className="w-1.5 h-1.5 rounded-full bg-white animate-pulse"></div>}
               </button>
             ))}
-            {tables.length === 0 && !loading && (
-              <div className="text-center py-10 px-6">
-                <TableIcon size={32} className="mx-auto text-slate-200 mb-3" />
-                <p className="text-xs text-slate-400 font-medium">No tables found.</p>
-              </div>
-            )}
           </div>
         </aside>
 
-        <main className="flex-1 overflow-hidden flex flex-col bg-slate-50">
+        <main className="flex-1 overflow-hidden flex flex-col relative">
           {error && (
-            <div className="m-6 p-4 bg-rose-50 border border-rose-200 text-rose-600 text-xs rounded-2xl flex items-center gap-3 shadow-sm animate-in fade-in slide-in-from-top-4">
-              <AlertCircle size={18} className="shrink-0" /> {error}
+            <div className="absolute top-6 left-1/2 -translate-x-1/2 z-50 p-4 bg-rose-600 text-white text-xs font-bold rounded-2xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4">
+              <AlertCircle size={18} /> {error}
+              <button onClick={() => setError(null)} className="ml-4 opacity-50 hover:opacity-100"><X size={14} /></button>
             </div>
           )}
 
           {activeTab === 'tables' ? (
-            <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex-1 flex flex-col">
               {selectedTable && (
-                <div className="px-8 py-4 bg-white border-b border-slate-200 flex items-center gap-8">
-                  <div className="flex items-center gap-4 border-r border-slate-100 pr-8">
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Columns</span>
-                    <span className="text-lg font-black text-slate-900">{columns.length}</span>
+                <div className="px-10 py-6 bg-white border-b border-slate-100 flex items-center gap-12">
+                  <div className="flex flex-col">
+                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Schema Identity</span>
+                    <span className="text-xl font-black text-slate-900 font-mono">public.{selectedTable}</span>
                   </div>
-                  <div className="flex items-center gap-4">
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Rows (est)</span>
-                    <span className="text-lg font-black text-slate-900">{tableData.length}</span>
+                  <div className="h-10 w-[1px] bg-slate-100"></div>
+                  <div className="flex flex-col">
+                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Live Records</span>
+                    <span className="text-xl font-black text-indigo-600">{tableData.length}</span>
                   </div>
                 </div>
               )}
               
-              <div className="flex-1 overflow-auto p-6">
+              <div className="flex-1 overflow-auto p-10 bg-[#FAFBFC]">
                 {loading ? (
-                  <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-4">
-                    <Loader2 className="animate-spin text-indigo-500" size={40} />
-                    <p className="text-xs font-bold uppercase tracking-widest">Introspecting Schema...</p>
+                  <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-6">
+                    <div className="relative">
+                      <div className="w-16 h-16 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin"></div>
+                      <Database className="absolute inset-0 m-auto text-indigo-600" size={24} />
+                    </div>
+                    <p className="text-sm font-black uppercase tracking-widest text-slate-500">Connecting to Engine...</p>
                   </div>
                 ) : selectedTable ? (
-                  <div className="bg-white rounded-[2rem] border border-slate-200 shadow-sm overflow-hidden min-w-full">
-                    <table className="min-w-full divide-y divide-slate-200">
-                      <thead className="bg-slate-50">
-                        <tr>
+                  <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-2xl shadow-slate-100 overflow-hidden min-w-full">
+                    <table className="min-w-full border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-100">
                           {columns.map(col => (
-                            <th key={col.name} className="px-6 py-4 text-left group">
+                            <th key={col.name} className="px-8 py-6 text-left group">
                               <div className="flex flex-col gap-1">
-                                <span className="text-[10px] font-black text-slate-900 uppercase tracking-wider">{col.name}</span>
-                                <span className="text-[9px] font-mono text-indigo-500 font-bold uppercase tracking-tighter">{col.type}</span>
+                                <span className="text-[10px] font-black text-slate-900 uppercase tracking-[0.2em]">{col.name}</span>
+                                <span className="text-[9px] font-mono text-indigo-500 font-bold tracking-tight">{col.type}</span>
                               </div>
                             </th>
                           ))}
                         </tr>
                       </thead>
-                      <tbody className="bg-white divide-y divide-slate-100">
+                      <tbody className="divide-y divide-slate-100">
                         {tableData.map((row, i) => (
-                          <tr key={i} className="hover:bg-indigo-50/30 transition-colors">
+                          <tr key={i} className="hover:bg-slate-50 transition-colors">
                             {columns.map(col => (
-                              <td key={col.name} className="px-6 py-4 text-xs text-slate-600 font-mono whitespace-nowrap">
+                              <td key={col.name} className="px-8 py-5 text-sm font-medium text-slate-700 font-mono">
                                 {row[col.name] === null ? <span className="text-slate-300 italic">null</span> : String(row[col.name])}
                               </td>
                             ))}
                           </tr>
                         ))}
-                        {tableData.length === 0 && (
-                          <tr>
-                            <td colSpan={columns.length} className="px-6 py-20 text-center text-slate-400">
-                              <div className="flex flex-col items-center gap-2">
-                                <Database size={32} className="opacity-10" />
-                                <span className="text-xs font-bold uppercase tracking-widest">No rows in this table</span>
-                              </div>
-                            </td>
-                          </tr>
-                        )}
                       </tbody>
                     </table>
                   </div>
                 ) : (
-                  <div className="h-full flex flex-col items-center justify-center text-slate-300 gap-4">
-                    <TableIcon size={64} className="opacity-20" />
-                    <p className="text-lg font-black tracking-tight text-slate-400">Select a table to explore data</p>
+                  <div className="h-full flex flex-col items-center justify-center text-slate-200">
+                    <Database size={120} className="mb-8 opacity-5" />
+                    <h3 className="text-3xl font-black text-slate-300 tracking-tighter">Instance Ready</h3>
+                    <p className="text-slate-400 font-medium">Select a resource to begin exploration.</p>
                   </div>
                 )}
               </div>
             </div>
           ) : (
             <div className="flex-1 flex flex-col bg-slate-950 overflow-hidden relative">
-              <div className="p-4 bg-slate-900 border-b border-white/5 flex items-center justify-between z-10">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center text-emerald-500">
-                    <Play size={16} />
+              <div className="px-8 py-5 bg-slate-900/80 backdrop-blur-xl border-b border-white/5 flex items-center justify-between z-10">
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-2xl bg-indigo-500/10 flex items-center justify-center text-indigo-400">
+                    <Terminal size={20} />
                   </div>
-                  <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Raw SQL Terminal</span>
+                  <div>
+                    <h4 className="text-white font-black text-sm tracking-tight">SQL Console v1</h4>
+                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">PostgreSQL Input Buffer</p>
+                  </div>
                 </div>
                 <button 
                   onClick={handleRunQuery}
                   disabled={executing}
-                  className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white px-6 py-2 rounded-xl text-xs font-black flex items-center gap-2 transition-all shadow-xl shadow-emerald-900/20"
+                  className="bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-white px-8 py-3 rounded-2xl text-xs font-black flex items-center gap-3 transition-all shadow-2xl shadow-emerald-500/20"
                 >
-                  {executing ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
-                  EXECUTE
+                  {executing ? <Loader2 size={18} className="animate-spin" /> : <Play size={18} />}
+                  EXECUTE QUERY
                 </button>
               </div>
               <textarea 
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                className="flex-1 w-full bg-slate-950 text-emerald-400 p-8 font-mono text-sm focus:outline-none resize-none spellcheck-false"
-                placeholder="-- Write your SQL here..."
+                className="flex-1 w-full bg-[#020617] text-emerald-400 p-12 font-mono text-lg leading-relaxed focus:outline-none resize-none spellcheck-false"
               />
               {queryResult && (
-                <div className="h-2/5 bg-slate-900 border-t border-white/10 overflow-auto p-6 font-mono shadow-2xl">
-                  <div className="flex items-center gap-4 mb-4 border-b border-white/5 pb-3">
-                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Execution Report</span>
-                    <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-500 text-[10px] font-bold rounded uppercase">
-                      {queryResult.command} OK
-                    </span>
-                    <span className="text-[10px] text-slate-500">Affected: {queryResult.rowCount} rows</span>
+                <div className="h-[45%] bg-[#0f172a] border-t border-white/5 overflow-auto p-10 font-mono animate-in slide-in-from-bottom-10">
+                  <div className="flex items-center gap-6 mb-8 pb-4 border-b border-white/5">
+                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Response Stream</span>
+                    <span className="text-xs font-bold text-emerald-500 bg-emerald-500/10 px-3 py-1 rounded-lg">Status: {queryResult.command} OK</span>
+                    <span className="text-xs font-bold text-slate-500">Latency: {queryResult.duration}</span>
                   </div>
-                  <pre className="text-[11px] text-slate-300 leading-relaxed">
-                    {JSON.stringify(queryResult.rows, null, 2)}
-                  </pre>
+                  <div className="space-y-4">
+                     <pre className="text-xs text-slate-300 leading-6">
+                        {JSON.stringify(queryResult.rows, null, 2)}
+                     </pre>
+                  </div>
                 </div>
               )}
             </div>
@@ -308,52 +295,53 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         </main>
       </div>
 
-      {/* No-Code Table Builder Modal */}
+      {/* No-Code Table Builder Modal (Robust) */}
       {showCreateTable && (
-        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[100] flex items-center justify-center p-6 animate-in fade-in duration-300">
-          <div className="bg-white rounded-[3rem] w-full max-w-4xl max-h-[90vh] overflow-hidden shadow-2xl border border-slate-200 flex flex-col animate-in zoom-in-95 duration-300">
-            <header className="p-8 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-slate-900 rounded-2xl flex items-center justify-center text-white">
-                  <Plus size={24} />
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-2xl z-[100] flex items-center justify-center p-8 animate-in fade-in duration-500">
+          <div className="bg-white rounded-[3.5rem] w-full max-w-5xl max-h-[90vh] overflow-hidden shadow-[0_0_100px_rgba(0,0,0,0.5)] border border-slate-200 flex flex-col animate-in zoom-in-95">
+            <header className="p-12 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-6">
+                <div className="w-16 h-16 bg-slate-900 rounded-[1.5rem] flex items-center justify-center text-white shadow-2xl">
+                  <Plus size={32} />
                 </div>
                 <div>
-                  <h3 className="text-2xl font-black text-slate-900 tracking-tight">Table Builder</h3>
-                  <p className="text-xs text-slate-400 font-bold uppercase tracking-widest">Designing Schema for {projectId}</p>
+                  <h3 className="text-4xl font-black text-slate-900 tracking-tighter">Schema Architect</h3>
+                  <p className="text-sm text-slate-500 font-bold uppercase tracking-widest">Designing public schema for {projectId}</p>
                 </div>
               </div>
-              <button onClick={() => setShowCreateTable(false)} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
-                <X size={24} className="text-slate-400" />
+              <button onClick={() => setShowCreateTable(false)} className="p-4 hover:bg-slate-200 rounded-full transition-colors">
+                <X size={32} className="text-slate-400" />
               </button>
             </header>
 
-            <div className="flex-1 overflow-y-auto p-10 space-y-10">
-              <div className="space-y-3">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">Table Name</label>
+            <div className="flex-1 overflow-y-auto p-16 space-y-16">
+              <div className="space-y-4 max-w-xl">
+                <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-1">Table Identity</label>
                 <input 
                   value={newTableName}
                   onChange={(e) => setNewTableName(e.target.value.toLowerCase().replace(/ /g, '_'))}
-                  placeholder="e.g. products_v1"
-                  className="w-full bg-slate-100 border-none rounded-2xl py-4 px-6 text-lg font-bold text-slate-900 focus:ring-2 focus:ring-indigo-500 transition-all outline-none"
+                  placeholder="e.g. core_products"
+                  className="w-full bg-slate-100 border-none rounded-[1.5rem] py-6 px-8 text-2xl font-black text-slate-900 focus:ring-4 focus:ring-indigo-500/20 transition-all outline-none placeholder:text-slate-300"
                 />
               </div>
 
-              <div className="space-y-6">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
-                    <Columns size={14} className="text-indigo-600" /> Column Definitions
+              <div className="space-y-8">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] flex items-center gap-3">
+                    <Code size={18} className="text-indigo-600" /> Attributes Definition
                   </h4>
                   <button 
                     onClick={() => setNewTableColumns([...newTableColumns, { name: 'new_column', type: 'text', primaryKey: false, nullable: true }])}
-                    className="text-xs font-black text-indigo-600 hover:bg-indigo-50 px-4 py-2 rounded-xl transition-all border border-indigo-100"
+                    className="text-xs font-black text-indigo-600 hover:bg-indigo-50 px-6 py-3 rounded-2xl transition-all border-2 border-indigo-100"
                   >
-                    + ADD COLUMN
+                    + ADD ATTRIBUTE
                   </button>
                 </div>
 
-                <div className="space-y-3">
+                <div className="grid grid-cols-1 gap-4">
                   {newTableColumns.map((col, idx) => (
-                    <div key={idx} className="flex items-center gap-4 bg-slate-50 p-4 rounded-2xl border border-slate-100 group">
+                    <div key={idx} className="flex items-center gap-6 bg-slate-50 p-6 rounded-[1.8rem] border border-slate-100 group hover:border-indigo-200 transition-all">
+                      <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center text-[10px] font-black text-slate-400 shadow-sm">{idx + 1}</div>
                       <input 
                         value={col.name}
                         onChange={(e) => {
@@ -361,7 +349,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
                           updated[idx].name = e.target.value.toLowerCase().replace(/ /g, '_');
                           setNewTableColumns(updated);
                         }}
-                        className="flex-1 bg-white border border-slate-200 rounded-xl py-2 px-4 text-sm font-bold text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none"
+                        className="flex-1 bg-white border border-slate-200 rounded-2xl py-3 px-6 text-sm font-bold text-slate-800 focus:ring-4 focus:ring-indigo-500/10 outline-none"
                       />
                       <select 
                         value={col.type}
@@ -370,33 +358,33 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
                           updated[idx].type = e.target.value;
                           setNewTableColumns(updated);
                         }}
-                        className="w-40 bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm font-medium text-slate-600 outline-none"
+                        className="w-56 bg-white border border-slate-200 rounded-2xl py-3 px-5 text-sm font-black text-indigo-600 outline-none"
                       >
-                        <option value="uuid">UUID</option>
-                        <option value="text">TEXT</option>
-                        <option value="integer">INTEGER</option>
+                        <option value="uuid">UUID v4</option>
+                        <option value="text">STRING / TEXT</option>
+                        <option value="integer">INTEGER (32-bit)</option>
                         <option value="boolean">BOOLEAN</option>
-                        <option value="timestamptz">TIMESTAMP TZ</option>
-                        <option value="jsonb">JSONB</option>
+                        <option value="timestamptz">TIMESTAMP (TZ)</option>
+                        <option value="jsonb">JSONB OBJECT</option>
                       </select>
-                      <label className="flex items-center gap-2 cursor-pointer select-none px-3">
+                      <div className="flex items-center gap-3 px-4 py-3 bg-white border border-slate-200 rounded-2xl shadow-sm">
                         <input 
                           type="checkbox" 
                           checked={col.primaryKey}
                           onChange={(e) => {
                             const updated = [...newTableColumns];
                             updated[idx].primaryKey = e.target.checked;
-                            if (e.target.checked) updated[idx].nullable = false;
                             setNewTableColumns(updated);
                           }}
+                          className="w-5 h-5 accent-indigo-600"
                         />
-                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">PK</span>
-                      </label>
+                        <span className="text-[10px] font-black text-slate-900 uppercase tracking-widest">PK</span>
+                      </div>
                       <button 
                         onClick={() => setNewTableColumns(newTableColumns.filter((_, i) => i !== idx))}
-                        className="p-2 text-slate-300 hover:text-rose-500 transition-colors"
+                        className="p-3 text-slate-300 hover:text-rose-600 transition-colors"
                       >
-                        <Trash2 size={18} />
+                        <Trash2 size={24} />
                       </button>
                     </div>
                   ))}
@@ -404,14 +392,14 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
               </div>
             </div>
 
-            <footer className="p-8 border-t border-slate-100 bg-slate-50 flex gap-4">
-              <button onClick={() => setShowCreateTable(false)} className="flex-1 py-4 text-slate-500 font-bold hover:bg-slate-200 rounded-2xl transition-all uppercase tracking-widest text-xs">Discard</button>
+            <footer className="p-12 border-t border-slate-100 bg-slate-50/50 flex gap-6">
+              <button onClick={() => setShowCreateTable(false)} className="flex-1 py-6 text-slate-400 font-black hover:bg-slate-200 rounded-[1.5rem] transition-all uppercase tracking-widest text-sm">Cancel Design</button>
               <button 
                 onClick={handleCreateTable}
                 disabled={executing || !newTableName}
-                className="flex-[2] py-4 bg-indigo-600 text-white font-black rounded-2xl shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all uppercase tracking-widest text-xs disabled:opacity-50"
+                className="flex-[2] py-6 bg-indigo-600 text-white font-black rounded-[1.5rem] shadow-2xl shadow-indigo-500/30 hover:bg-indigo-700 transition-all uppercase tracking-[0.2em] text-sm disabled:opacity-50"
               >
-                {executing ? 'CREATING...' : 'SAVE TABLE SCHEMA'}
+                {executing ? 'PROVISIONING ARCHITECTURE...' : 'COMMIT TABLE TO DATABASE'}
               </button>
             </footer>
           </div>
