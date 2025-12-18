@@ -16,26 +16,10 @@ http {
     sendfile        on;
     keepalive_timeout  65;
 
-    gzip on;
-    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
-
-    # Redirect HTTP to HTTPS
+    # Se o SSL não existir, o Nginx não deve recusar a porta 80.
     server {
         listen 80;
         server_name _;
-        return 301 https://$host$request_uri;
-    }
-
-    server {
-        listen 443 ssl;
-        server_name _;
-
-        # SSL Certificates (Backend routes must write these files to /etc/nginx/ssl/)
-        ssl_certificate /etc/nginx/ssl/cascata_global.pem;
-        ssl_certificate_key /etc/nginx/ssl/cascata_global.key;
-
-        ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_ciphers HIGH:!aNULL:!MD5;
 
         # Frontend Proxy
         location / {
@@ -64,4 +48,13 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
         }
     }
+
+    # SSL Config (Apenas ative se tiver os arquivos no volume)
+    # server {
+    #     listen 443 ssl;
+    #     server_name _;
+    #     ssl_certificate /etc/nginx/ssl/cascata_global.pem;
+    #     ssl_certificate_key /etc/nginx/ssl/cascata_global.key;
+    #     ... 
+    # }
 }
