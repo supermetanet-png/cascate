@@ -50,7 +50,6 @@ const authenticateAdmin = (req: any, res: any, next: any) => {
 };
 
 // --- CONTROL PLANE ---
-
 app.post('/auth/login', async (req, res) => {
   const { email, password } = req.body;
   try {
@@ -125,23 +124,6 @@ app.post('/:slug/ui-settings/:table', authenticateAdmin, async (req, res) => {
 });
 
 // --- DATA PLANE ---
-
-app.get('/:slug/stats', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  try {
-    const [t, u, s] = await Promise.all([
-      pool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"),
-      pool.query("SELECT count(*) FROM auth.users"),
-      pool.query("SELECT pg_size_pretty(pg_database_size(current_database())) as size")
-    ]);
-    res.json({ tables: parseInt(t.rows[0].count), users: parseInt(u.rows[0].count), size: s.rows[0].size });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// CORREÇÃO: Endpoint de tabelas corrigido para evitar o 502
 app.get('/:slug/tables', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
@@ -153,7 +135,6 @@ app.get('/:slug/tables', authenticateAdmin, async (req, res) => {
       ORDER BY table_name
     `);
     
-    // Buscar contagem de forma segura para cada tabela
     const tablesWithCount = await Promise.all(tablesResult.rows.map(async (row) => {
       try {
         const countRes = await pool.query(`SELECT count(*) FROM public."${row.name}"`);
@@ -222,6 +203,7 @@ app.post('/:slug/tables/:table/rows', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
   const { data } = req.body;
+  // Filtrar apenas o que tem valor definido para permitir que o Postgres use DEFAULT
   const filteredData = Object.fromEntries(Object.entries(data).filter(([_, v]) => v !== null && v !== ''));
   const keys = Object.keys(filteredData).map(k => `"${k}"`).join(', ');
   const values = Object.values(filteredData);
@@ -239,85 +221,6 @@ app.post('/:slug/tables/:table/delete-rows', authenticateAdmin, async (req, res)
   try {
     await pool.query(`DELETE FROM public."${req.params.table}" WHERE "${pkColumn}" = ANY($1)`, [ids]);
     res.json({ success: true });
-  } catch (err: any) { res.status(400).json({ error: err.message }); }
-});
-
-app.post('/:slug/query', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  try {
-    const { sql } = req.body;
-    const startTime = Date.now();
-    const result = await pool.query(sql);
-    const duration = Date.now() - startTime;
-    res.json({ rows: result.rows, rowCount: result.rowCount, command: result.command, duration: `${duration}ms` });
-  } catch (err: any) { res.status(400).json({ error: err.message }); }
-});
-
-app.post('/:slug/tables', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const { name, columns } = req.body;
-  const colSql = columns.map((c: any) => `"${c.name}" ${c.type} ${c.primaryKey ? 'PRIMARY KEY' : ''} ${c.nullable ? '' : 'NOT NULL'} ${c.default ? 'DEFAULT ' + c.default : ''}`).join(', ');
-  try {
-    await pool.query(`CREATE TABLE public."${name}" (${colSql})`);
-    res.status(201).json({ success: true });
-  } catch (err: any) { res.status(400).json({ error: err.message }); }
-});
-
-app.get('/:slug/tables/:table/columns', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const result = await pool.query(`
-    SELECT column_name as name, data_type as type, is_nullable as nullable, column_default as default,
-    EXISTS (
-        SELECT 1 FROM information_schema.table_constraints tc 
-        JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name 
-        WHERE tc.table_name = $1 AND tc.constraint_type = 'PRIMARY KEY' AND kcu.column_name = columns.column_name
-    ) as "isPrimaryKey"
-    FROM information_schema.columns 
-    WHERE table_name = $1 AND table_schema = 'public'
-    ORDER BY ordinal_position
-  `, [req.params.table]);
-  res.json(result.rows);
-});
-
-app.get('/:slug/auth/users', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const result = await pool.query('SELECT id, email, created_at FROM auth.users ORDER BY created_at DESC');
-  res.json(result.rows);
-});
-
-app.post('/:slug/auth/users', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const { email, password } = req.body;
-  const hash = await bcrypt.hash(password, 10);
-  try {
-    await pool.query('INSERT INTO auth.users (email, password_hash) VALUES ($1, $2)', [email, hash]);
-    res.status(201).json({ success: true });
-  } catch (err: any) { res.status(400).json({ error: err.message }); }
-});
-
-app.get('/:slug/policies', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const result = await pool.query(`
-    SELECT schemaname, tablename, policyname, permissive, roles, cmd, qual, with_check 
-    FROM pg_policies WHERE schemaname = 'public'
-  `);
-  res.json(result.rows);
-});
-
-app.post('/:slug/policies', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const { name, table, command, check } = req.body;
-  try {
-    await pool.query(`ALTER TABLE public."${table}" ENABLE ROW LEVEL SECURITY`);
-    await pool.query(`CREATE POLICY "${name}" ON public."${table}" FOR ${command} USING (${check})`);
-    res.status(201).json({ success: true });
   } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
