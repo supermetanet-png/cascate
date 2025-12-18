@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback } from 'react';
 import { Shield, Lock, Unlock, Plus, Trash2, Edit2, AlertCircle, Loader2, X, Terminal, CheckCircle2, Zap, User, Users, Globe, Eye, Code } from 'lucide-react';
 
@@ -10,7 +11,7 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [showModal, setShowModal] = useState(false);
   const [executing, setExecuting] = useState(false);
 
-  // New Policy State
+  // New Policy Form State
   const [newPolicy, setNewPolicy] = useState({
     name: '',
     table: '',
@@ -42,7 +43,9 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
       ]);
       setPolicies(policiesData);
       setTables(tablesData);
-      if (tablesData.length > 0) setNewPolicy(prev => ({ ...prev, table: tablesData[0].name }));
+      if (tablesData.length > 0) {
+        setNewPolicy(prev => ({ ...prev, table: tablesData[0].name }));
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -50,14 +53,16 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
     }
   };
 
-  useEffect(() => { fetchData(); }, [projectId]);
+  useEffect(() => {
+    fetchData();
+  }, [projectId]);
 
   const handleDelete = async (table: string, name: string) => {
-    if (!confirm(`Delete policy "${name}" on "${table}"?`)) return;
+    if (!confirm(`Are you sure you want to drop policy "${name}" on table "${table}"?`)) return;
     setExecuting(true);
     try {
       await fetchWithAuth(`/api/data/${projectId}/policies/${table}/${name}`, { method: 'DELETE' });
-      setSuccessMsg('Policy successfully dropped.');
+      setSuccessMsg('Policy dropped successfully.');
       fetchData();
       setTimeout(() => setSuccessMsg(null), 3000);
     } catch (err: any) {
@@ -68,6 +73,10 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   };
 
   const handleCreate = async () => {
+    if (!newPolicy.name || !newPolicy.table) {
+      setError('Policy name and table are required.');
+      return;
+    }
     setExecuting(true);
     try {
       await fetchWithAuth(`/api/data/${projectId}/policies`, {
@@ -88,16 +97,16 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   const applyTemplate = (type: string) => {
     switch (type) {
       case 'read_all':
-        setNewPolicy({ ...newPolicy, name: `Enable read for everyone`, command: 'SELECT', role: 'public', using: 'true', withCheck: '' });
+        setNewPolicy({ ...newPolicy, name: `Enable read for all users`, command: 'SELECT', role: 'public', using: 'true', withCheck: '' });
         break;
       case 'auth_all':
-        setNewPolicy({ ...newPolicy, name: `Authenticated full access`, command: 'ALL', role: 'authenticated', using: 'true', withCheck: 'true' });
+        setNewPolicy({ ...newPolicy, name: `Allow authenticated full access`, command: 'ALL', role: 'authenticated', using: 'true', withCheck: 'true' });
         break;
       case 'user_own':
-        setNewPolicy({ ...newPolicy, name: `Users can only see own data`, command: 'SELECT', role: 'authenticated', using: 'user_id = auth.uid()', withCheck: '' });
+        setNewPolicy({ ...newPolicy, name: `Users can only see their own records`, command: 'SELECT', role: 'authenticated', using: 'user_id = auth.uid()', withCheck: '' });
         break;
       case 'user_manage':
-        setNewPolicy({ ...newPolicy, name: `Users can manage own data`, command: 'ALL', role: 'authenticated', using: 'user_id = auth.uid()', withCheck: 'user_id = auth.uid()' });
+        setNewPolicy({ ...newPolicy, name: `Users can manage their own records`, command: 'ALL', role: 'authenticated', using: 'user_id = auth.uid()', withCheck: 'user_id = auth.uid()' });
         break;
     }
   };
@@ -106,56 +115,71 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
 
   return (
     <div className="flex flex-col h-full bg-[#FAFBFC] overflow-hidden">
-      <header className="px-10 py-10 bg-white border-b border-slate-200 flex items-center justify-between">
+      {/* Notifications */}
+      {(error || successMsg) && (
+        <div className={`fixed top-8 left-1/2 -translate-x-1/2 z-[400] p-5 rounded-3xl shadow-2xl flex items-center gap-4 animate-in slide-in-from-top-4 ${error ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
+          {error ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
+          <span className="text-sm font-black tracking-tight">{error || successMsg}</span>
+          <button onClick={() => { setError(null); setSuccessMsg(null); }} className="ml-4 opacity-50 hover:opacity-100"><X size={16} /></button>
+        </div>
+      )}
+
+      <header className="px-10 py-10 bg-white border-b border-slate-200 flex items-center justify-between shadow-sm z-10">
         <div className="flex items-center gap-6">
           <div className="w-16 h-16 bg-slate-900 text-white rounded-[1.8rem] flex items-center justify-center shadow-2xl shadow-slate-200">
             <Shield size={32} />
           </div>
           <div>
             <h1 className="text-4xl font-black text-slate-900 tracking-tighter leading-none">Access Control</h1>
-            <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px] mt-2">Row-Level Security & Orchestration</p>
+            <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px] mt-2">Row-Level Security Architecture</p>
           </div>
         </div>
-        <button onClick={() => setShowModal(true)} className="bg-indigo-600 text-white px-8 py-4 rounded-[1.5rem] font-black flex items-center gap-3 hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100">
+        <button 
+          onClick={() => {
+            setNewPolicy({ name: '', table: tables[0]?.name || '', command: 'SELECT', role: 'public', using: 'true', withCheck: '' });
+            setShowModal(true);
+          }} 
+          className="bg-indigo-600 text-white px-8 py-4 rounded-[1.5rem] font-black flex items-center gap-3 hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100 active:scale-95"
+        >
           <Plus size={24} /> CREATE POLICY
         </button>
       </header>
 
-      <div className="flex-1 overflow-y-auto p-10 relative">
-        {(error || successMsg) && (
-          <div className={`fixed top-8 left-1/2 -translate-x-1/2 z-[200] p-5 rounded-3xl shadow-2xl flex items-center gap-4 animate-in slide-in-from-top-4 ${error ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
-            {error ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
-            <span className="text-sm font-black tracking-tight">{error || successMsg}</span>
-            <button onClick={() => { setError(null); setSuccessMsg(null); }} className="ml-4 opacity-50"><X size={16} /></button>
-          </div>
-        )}
-
-        <div className="max-w-6xl mx-auto space-y-10">
+      <div className="flex-1 overflow-y-auto p-10">
+        <div className="max-w-6xl mx-auto space-y-12">
+          {/* Welcome/Banner */}
           <div className="bg-indigo-600 rounded-[3rem] p-12 text-white flex items-center gap-10 relative overflow-hidden shadow-2xl shadow-indigo-100">
-            <div className="absolute top-0 right-0 p-12 opacity-10"><Shield size={220} /></div>
-            <div className="w-24 h-24 bg-white/20 rounded-[2rem] backdrop-blur-md flex items-center justify-center"><Zap size={48} className="text-white" /></div>
-            <div className="relative z-10 max-w-2xl">
-              <h4 className="text-3xl font-black tracking-tight mb-2">Physical Security Enforcement</h4>
-              <p className="text-indigo-100 text-lg font-medium leading-relaxed">Cascata leverages native PostgreSQL RLS. Each policy is compiled into the query execution plan, ensuring high-performance data isolation per role.</p>
+            <div className="absolute top-0 right-0 p-12 opacity-10"><Shield size={240} /></div>
+            <div className="w-24 h-24 bg-white/20 rounded-[2.5rem] backdrop-blur-md flex items-center justify-center shrink-0">
+              <Zap size={48} className="text-white" />
+            </div>
+            <div className="relative z-10">
+              <h4 className="text-3xl font-black tracking-tight mb-2">Advanced Data Orchestration</h4>
+              <p className="text-indigo-100 text-lg font-medium leading-relaxed max-w-3xl"> cascata uses native PostgreSQL RLS. Policies are compiled into the query execution plan, ensuring high-performance isolation for multi-tenant applications.</p>
             </div>
           </div>
 
           <div className="space-y-6">
             <div className="flex items-center justify-between px-4">
-              <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em]">Active Manifest ({policies.length})</h3>
+              <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em]">Active Security Manifest ({policies.length})</h3>
             </div>
 
             {loading ? (
               <div className="flex flex-col items-center justify-center py-40 text-slate-300 gap-6">
-                <div className="w-16 h-16 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin" />
-                <span className="text-xs font-black uppercase tracking-widest">Scanning Schemas...</span>
+                <Loader2 className="animate-spin text-indigo-600" size={48} />
+                <span className="text-xs font-black uppercase tracking-widest">Scanning Catalog...</span>
               </div>
             ) : policies.length === 0 ? (
-              <div className="bg-white border-4 border-dashed border-slate-100 rounded-[4rem] p-32 text-center flex flex-col items-center">
+              <div className="bg-white border-4 border-dashed border-slate-100 rounded-[4rem] p-32 text-center flex flex-col items-center shadow-sm">
                 <Unlock className="text-slate-100 mb-8" size={120} />
-                <h4 className="text-2xl font-black text-slate-300 tracking-tight uppercase tracking-[0.1em]">No Security Policies Defined</h4>
-                <p className="text-slate-400 mt-4 font-medium max-w-sm">RLS is disabled by default. Your data is currently accessible based on standard grant permissions.</p>
-                <button onClick={() => setShowModal(true)} className="mt-10 bg-slate-900 text-white px-10 py-4 rounded-[1.5rem] font-black text-xs uppercase tracking-widest">Shield this Instance</button>
+                <h4 className="text-2xl font-black text-slate-300 tracking-tight uppercase tracking-[0.1em]">Public Instance (RLS Disabled)</h4>
+                <p className="text-slate-400 mt-4 font-medium max-w-sm">Data access is currently open. Create a policy to start isolating rows by role or identity.</p>
+                <button 
+                  onClick={() => setShowModal(true)} 
+                  className="mt-10 bg-slate-900 text-white px-10 py-4 rounded-[1.5rem] font-black text-xs uppercase tracking-widest hover:bg-slate-800 transition-all active:scale-95"
+                >
+                  Armor your Data
+                </button>
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-6 pb-20">
@@ -173,10 +197,10 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
                             <span className="w-1.5 h-1.5 bg-slate-200 rounded-full" />
                             <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{p.cmd}</span>
                             <span className="w-1.5 h-1.5 bg-slate-200 rounded-full" />
-                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
-                              {p.roles.includes('authenticated') ? <Users size={12} /> : p.roles.includes('anon') ? <User size={12} /> : <Globe size={12} />}
-                              {p.roles.join(', ')}
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              {p.roles.includes('authenticated') ? <Users size={12} className="text-indigo-400" /> : p.roles.includes('anon') ? <User size={12} className="text-slate-400" /> : <Globe size={12} className="text-emerald-400" />}
+                              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{p.roles.join(', ')}</span>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -189,12 +213,12 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
                     
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="bg-slate-50 rounded-3xl p-6 border border-slate-100 flex flex-col gap-2">
-                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Eye size={12} /> Row Visibility (USING)</span>
-                        <code className="text-xs font-mono text-slate-700">{p.qual || 'true'}</code>
+                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Eye size={12} /> READ VISIBILITY (USING)</span>
+                        <code className="text-xs font-mono text-slate-700 break-all">{p.qual || 'true'}</code>
                       </div>
                       <div className="bg-slate-50 rounded-3xl p-6 border border-slate-100 flex flex-col gap-2">
-                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Edit2 size={12} /> Write Validation (WITH CHECK)</span>
-                        <code className="text-xs font-mono text-slate-700">{p.with_check || 'null'}</code>
+                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Edit2 size={12} /> WRITE VALIDATION (WITH CHECK)</span>
+                        <code className="text-xs font-mono text-slate-700 break-all">{p.with_check || 'null'}</code>
                       </div>
                     </div>
                   </div>
@@ -205,113 +229,135 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
         </div>
       </div>
 
-      {/* NO-CODE POWERFUL POLICY BUILDER MODAL */}
+      {/* POWERFUL NO-CODE POLICY BUILDER MODAL */}
       {showModal && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-2xl z-[300] flex items-center justify-center p-8 overflow-y-auto">
-          <div className="bg-white rounded-[4rem] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95 duration-300">
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-2xl z-[300] flex items-center justify-center p-8 overflow-y-auto animate-in fade-in duration-300">
+          <div className="bg-white rounded-[4rem] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95 duration-500 border border-slate-200">
             <header className="p-12 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
               <div className="flex items-center gap-8">
-                <div className="w-16 h-16 bg-slate-900 rounded-[1.8rem] flex items-center justify-center text-white shadow-2xl">
+                <div className="w-16 h-16 bg-slate-900 rounded-[2rem] flex items-center justify-center text-white shadow-2xl">
                   <Shield size={32} />
                 </div>
                 <div>
                   <h3 className="text-4xl font-black text-slate-900 tracking-tighter">Policy Architect</h3>
-                  <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px] mt-1">No-Code RLS Generator</p>
+                  <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px] mt-1">Design isolated row access without SQL</p>
                 </div>
               </div>
-              <button onClick={() => setShowModal(false)} className="p-4 hover:bg-slate-200 rounded-full transition-all text-slate-400">
+              <button onClick={() => setShowModal(false)} className="p-4 hover:bg-slate-200 rounded-full transition-all text-slate-400 active:scale-90">
                 <X size={32} />
               </button>
             </header>
 
             <div className="flex-1 overflow-y-auto p-12 flex flex-col lg:flex-row gap-12">
               <div className="flex-1 space-y-10">
+                {/* Section: Templates */}
                 <div className="space-y-4">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Select Logic Template</label>
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Accelerators (Templates)</label>
                   <div className="grid grid-cols-2 gap-3">
-                    <button onClick={() => applyTemplate('read_all')} className="p-5 border border-slate-200 rounded-[1.8rem] text-left hover:border-indigo-600 hover:bg-indigo-50 transition-all flex flex-col gap-2 group">
-                      <span className="text-[10px] font-black text-slate-900 uppercase">Public Read</span>
-                      <p className="text-[10px] text-slate-400 font-medium leading-tight">Allow anyone to read data without authentication.</p>
-                    </button>
-                    <button onClick={() => applyTemplate('auth_all')} className="p-5 border border-slate-200 rounded-[1.8rem] text-left hover:border-indigo-600 hover:bg-indigo-50 transition-all flex flex-col gap-2 group">
-                      <span className="text-[10px] font-black text-slate-900 uppercase">Authenticated Full</span>
-                      <p className="text-[10px] text-slate-400 font-medium leading-tight">Logged users can perform all actions.</p>
-                    </button>
-                    <button onClick={() => applyTemplate('user_own')} className="p-5 border border-slate-200 rounded-[1.8rem] text-left hover:border-indigo-600 hover:bg-indigo-50 transition-all flex flex-col gap-2 group">
-                      <span className="text-[10px] font-black text-slate-900 uppercase">Owner Visibility</span>
-                      <p className="text-[10px] text-slate-400 font-medium leading-tight">Restrict data visibility to the record owner.</p>
-                    </button>
-                    <button onClick={() => applyTemplate('user_manage')} className="p-5 border border-slate-200 rounded-[1.8rem] text-left hover:border-indigo-600 hover:bg-indigo-50 transition-all flex flex-col gap-2 group">
-                      <span className="text-[10px] font-black text-slate-900 uppercase">Owner Management</span>
-                      <p className="text-[10px] text-slate-400 font-medium leading-tight">Full CRUD control for record owners only.</p>
-                    </button>
+                    {[
+                      { id: 'read_all', label: 'Public Read', desc: 'Allow read access to everyone.' },
+                      { id: 'auth_all', label: 'Auth CRUD', desc: 'Full access to logged-in users.' },
+                      { id: 'user_own', label: 'Owner Only', desc: 'Users only see their own rows.' },
+                      { id: 'user_manage', label: 'Owner CRUD', desc: 'Full control over own data.' }
+                    ].map(tpl => (
+                      <button key={tpl.id} onClick={() => applyTemplate(tpl.id)} className="p-5 border border-slate-200 rounded-[1.8rem] text-left hover:border-indigo-600 hover:bg-indigo-50 transition-all flex flex-col gap-2 group active:scale-[0.98]">
+                        <span className="text-[11px] font-black text-slate-900 uppercase group-hover:text-indigo-600 transition-colors">{tpl.label}</span>
+                        <p className="text-[10px] text-slate-400 font-medium leading-tight">{tpl.desc}</p>
+                      </button>
+                    ))}
                   </div>
                 </div>
 
+                {/* Section: Basic Settings */}
                 <div className="grid grid-cols-2 gap-8">
                   <div className="space-y-3">
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Target Table</label>
-                    <select value={newPolicy.table} onChange={(e) => setNewPolicy({ ...newPolicy, table: e.target.value })} className="w-full bg-slate-100 border-none rounded-2xl py-4 px-6 text-sm font-black text-slate-900 outline-none">
+                    <select 
+                      value={newPolicy.table} 
+                      onChange={(e) => setNewPolicy({ ...newPolicy, table: e.target.value })} 
+                      className="w-full bg-slate-100 border-none rounded-2xl py-5 px-6 text-sm font-black text-slate-900 outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all"
+                    >
                       {tables.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
                     </select>
                   </div>
                   <div className="space-y-3">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Policy Identity</label>
-                    <input value={newPolicy.name} onChange={(e) => setNewPolicy({ ...newPolicy, name: e.target.value })} className="w-full bg-slate-100 border-none rounded-2xl py-4 px-6 text-sm font-bold text-slate-900 outline-none" placeholder="e.g. users_can_read_own" />
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Internal Alias</label>
+                    <input 
+                      value={newPolicy.name} 
+                      onChange={(e) => setNewPolicy({ ...newPolicy, name: e.target.value })} 
+                      className="w-full bg-slate-100 border-none rounded-2xl py-5 px-6 text-sm font-bold text-slate-900 outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all" 
+                      placeholder="e.g. read_access_for_public" 
+                    />
                   </div>
                 </div>
 
+                {/* Section: Command & Role */}
                 <div className="grid grid-cols-2 gap-8">
                   <div className="space-y-3">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Command Mode</label>
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Command Vector</label>
                     <div className="flex gap-2">
                       {['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'ALL'].map(cmd => (
-                        <button key={cmd} onClick={() => setNewPolicy({ ...newPolicy, command: cmd })} className={`flex-1 py-3 text-[9px] font-black rounded-xl border transition-all ${newPolicy.command === cmd ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-400 border-slate-200'}`}>{cmd}</button>
+                        <button key={cmd} onClick={() => setNewPolicy({ ...newPolicy, command: cmd })} className={`flex-1 py-3.5 text-[9px] font-black rounded-xl border transition-all active:scale-95 ${newPolicy.command === cmd ? 'bg-slate-900 text-white border-slate-900 shadow-lg' : 'bg-white text-slate-400 border-slate-200'}`}>{cmd}</button>
                       ))}
                     </div>
                   </div>
                   <div className="space-y-3">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Role Permission</label>
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Role Persona</label>
                     <div className="flex gap-2">
                       {['public', 'authenticated', 'anon'].map(role => (
-                        <button key={role} onClick={() => setNewPolicy({ ...newPolicy, role })} className={`flex-1 py-3 text-[9px] font-black rounded-xl border transition-all ${newPolicy.role === role ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-400 border-slate-200'}`}>{role.toUpperCase()}</button>
+                        <button key={role} onClick={() => setNewPolicy({ ...newPolicy, role })} className={`flex-1 py-3.5 text-[9px] font-black rounded-xl border transition-all active:scale-95 ${newPolicy.role === role ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg' : 'bg-white text-slate-400 border-slate-200'}`}>{role.toUpperCase()}</button>
                       ))}
                     </div>
                   </div>
                 </div>
 
+                {/* Section: Logical Expressions */}
                 <div className="space-y-6">
                   <div className="space-y-2">
                     <div className="flex justify-between items-center px-1">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Visibility Logic (USING)</label>
-                      <button onClick={() => setNewPolicy({ ...newPolicy, using: 'auth.uid() = user_id' })} className="text-[9px] font-black text-indigo-600 hover:underline">Insert auth.uid()</button>
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Visibility Condition (USING)</label>
+                      <button onClick={() => setNewPolicy({ ...newPolicy, using: 'auth.uid() = user_id' })} className="text-[9px] font-black text-indigo-600 hover:text-indigo-800 transition-colors uppercase tracking-widest">Apply ID Sync</button>
                     </div>
-                    <textarea value={newPolicy.using} onChange={(e) => setNewPolicy({ ...newPolicy, using: e.target.value })} className="w-full bg-slate-900 text-emerald-400 p-6 rounded-[1.8rem] font-mono text-sm h-24 outline-none border-2 border-transparent focus:border-indigo-500/30" />
+                    <textarea 
+                      value={newPolicy.using} 
+                      onChange={(e) => setNewPolicy({ ...newPolicy, using: e.target.value })} 
+                      className="w-full bg-slate-900 text-emerald-400 p-6 rounded-[2rem] font-mono text-sm h-32 outline-none border-2 border-transparent focus:border-indigo-500/30 transition-all resize-none shadow-inner" 
+                      placeholder="e.g. true"
+                    />
                   </div>
-                  {(newPolicy.command !== 'SELECT' && newPolicy.command !== 'DELETE') && (
+                  
+                  {['INSERT', 'UPDATE', 'ALL'].includes(newPolicy.command) && (
                     <div className="space-y-2">
                       <div className="flex justify-between items-center px-1">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Validation Logic (WITH CHECK)</label>
-                        <button onClick={() => setNewPolicy({ ...newPolicy, withCheck: 'auth.uid() = user_id' })} className="text-[9px] font-black text-indigo-600 hover:underline">Insert auth.uid()</button>
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Mutation Validation (WITH CHECK)</label>
+                        <button onClick={() => setNewPolicy({ ...newPolicy, withCheck: 'auth.uid() = user_id' })} className="text-[9px] font-black text-indigo-600 hover:text-indigo-800 transition-colors uppercase tracking-widest">Apply ID Sync</button>
                       </div>
-                      <textarea value={newPolicy.withCheck} onChange={(e) => setNewPolicy({ ...newPolicy, withCheck: e.target.value })} className="w-full bg-slate-900 text-amber-400 p-6 rounded-[1.8rem] font-mono text-sm h-24 outline-none border-2 border-transparent focus:border-indigo-500/30" />
+                      <textarea 
+                        value={newPolicy.withCheck} 
+                        onChange={(e) => setNewPolicy({ ...newPolicy, withCheck: e.target.value })} 
+                        className="w-full bg-slate-900 text-amber-400 p-6 rounded-[2rem] font-mono text-sm h-32 outline-none border-2 border-transparent focus:border-indigo-500/30 transition-all resize-none shadow-inner" 
+                        placeholder="e.g. auth.uid() = user_id"
+                      />
                     </div>
                   )}
                 </div>
               </div>
 
+              {/* Sidebar: SQL Preview */}
               <div className="lg:w-96 space-y-6">
                 <div className="bg-slate-950 rounded-[3rem] p-8 flex flex-col gap-6 h-fit sticky top-0 shadow-2xl border border-white/5">
                   <div className="flex items-center gap-3 text-white border-b border-white/10 pb-6">
                     <Code size={20} className="text-indigo-400" />
-                    <span className="font-black text-sm uppercase tracking-widest">Manifest Preview</span>
+                    <span className="font-black text-xs uppercase tracking-[0.2em]">Compiled Manifest</span>
                   </div>
-                  <pre className="text-[11px] font-mono text-slate-400 leading-relaxed overflow-x-auto whitespace-pre-wrap">
+                  <pre className="text-[11px] font-mono text-slate-400 leading-relaxed overflow-x-auto whitespace-pre-wrap py-2">
                     {generatedSQL}
                   </pre>
-                  <div className="mt-4 pt-6 border-t border-white/10">
+                  <div className="mt-4 pt-6 border-t border-white/10 flex flex-col gap-4">
                     <div className="p-4 bg-indigo-500/10 rounded-2xl border border-indigo-500/20">
-                      <p className="text-[10px] text-indigo-300 font-bold leading-relaxed">Tip: "USING" controls which rows are returned in a SELECT. "WITH CHECK" controls data validation on INSERT/UPDATE.</p>
+                      <p className="text-[10px] text-indigo-300 font-bold leading-relaxed">
+                        <Zap size={10} className="inline mr-1 mb-1" /> RLS automatically injects these filters into every query reaching the table, even if the client doesn't explicitly add them.
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -319,9 +365,13 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
             </div>
 
             <footer className="p-12 border-t border-slate-100 bg-slate-50/50 flex gap-6">
-              <button onClick={() => setShowModal(false)} className="flex-1 py-6 text-slate-400 font-black uppercase tracking-widest text-xs">Abort</button>
-              <button onClick={handleCreate} disabled={executing || !newPolicy.name} className="flex-[3] py-6 bg-indigo-600 text-white font-black rounded-[2rem] shadow-2xl shadow-indigo-200 uppercase tracking-widest text-xs flex items-center justify-center gap-3">
-                {executing ? <Loader2 size={18} className="animate-spin" /> : <><CheckCircle2 size={18} /> COMMIT SECURITY POLICY</>}
+              <button onClick={() => setShowModal(false)} className="flex-1 py-7 text-slate-400 font-black uppercase tracking-widest text-xs hover:bg-slate-100 rounded-3xl transition-all">Abort Design</button>
+              <button 
+                onClick={handleCreate} 
+                disabled={executing || !newPolicy.name} 
+                className="flex-[3] py-7 bg-indigo-600 text-white font-black rounded-[2.2rem] shadow-2xl shadow-indigo-200 uppercase tracking-[0.2em] text-xs flex items-center justify-center gap-4 hover:bg-indigo-700 transition-all active:scale-95 disabled:opacity-50"
+              >
+                {executing ? <Loader2 size={18} className="animate-spin" /> : <><CheckCircle2 size={18} /> COMMIT SECURITY PLAN</>}
               </button>
             </footer>
           </div>
