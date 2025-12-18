@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
@@ -142,6 +141,26 @@ app.post('/:slug/ui-settings/:table', authenticateAdmin, async (req, res) => {
 });
 
 // --- DATA PLANE ---
+
+// PROJET STATS ENDPOINT
+app.get('/:slug/stats', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  try {
+    const tablesCount = await pool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'");
+    const usersCount = await pool.query("SELECT count(*) FROM auth.users");
+    const dbSize = await pool.query("SELECT pg_size_pretty(pg_database_size(current_database()))");
+    res.json({
+      tables: parseInt(tablesCount.rows[0].count),
+      users: parseInt(usersCount.rows[0].count),
+      size: dbSize.rows[0].pg_size_pretty
+    });
+  } catch (err: any) {
+    // If auth.users doesn't exist yet or other schema error
+    res.json({ tables: 0, users: 0, size: '0 MB' });
+  }
+});
+
 app.get('/:slug/tables', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });

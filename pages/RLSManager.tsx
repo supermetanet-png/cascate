@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback } from 'react';
 import { Shield, Lock, Unlock, Plus, Trash2, Edit2, AlertCircle, Loader2, X, Terminal, CheckCircle2, Zap, User, Users, Globe, Eye, Code } from 'lucide-react';
 
@@ -56,6 +55,15 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   useEffect(() => {
     fetchData();
   }, [projectId]);
+
+  // Helper to safely parse Postgres roles which can arrive as an array or as a string like "{public}"
+  const safeRoles = (roles: any): string[] => {
+    if (Array.isArray(roles)) return roles;
+    if (typeof roles === 'string') {
+      return roles.replace(/[{}]/g, '').split(',').map(r => r.trim());
+    }
+    return [];
+  };
 
   const handleDelete = async (table: string, name: string) => {
     if (!confirm(`Are you sure you want to drop policy "${name}" on table "${table}"?`)) return;
@@ -183,46 +191,49 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-6 pb-20">
-                {policies.map((p, i) => (
-                  <div key={i} className="bg-white border border-slate-200 rounded-[2.5rem] p-8 hover:border-indigo-300 hover:shadow-2xl hover:shadow-indigo-100/50 transition-all group flex flex-col gap-8">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-6">
-                        <div className="w-14 h-14 bg-slate-50 text-slate-300 rounded-2xl flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all duration-500">
-                          <Lock size={24} />
-                        </div>
-                        <div>
-                          <h4 className="text-xl font-black text-slate-900 group-hover:text-indigo-600 transition-colors">{p.policyname}</h4>
-                          <div className="flex items-center gap-3 mt-1">
-                            <span className="text-[10px] font-black text-indigo-500 bg-indigo-50 px-2.5 py-1 rounded-lg uppercase tracking-widest border border-indigo-100">{p.tablename}</span>
-                            <span className="w-1.5 h-1.5 bg-slate-200 rounded-full" />
-                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{p.cmd}</span>
-                            <span className="w-1.5 h-1.5 bg-slate-200 rounded-full" />
-                            <div className="flex items-center gap-1.5">
-                              {p.roles.includes('authenticated') ? <Users size={12} className="text-indigo-400" /> : p.roles.includes('anon') ? <User size={12} className="text-slate-400" /> : <Globe size={12} className="text-emerald-400" />}
-                              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{p.roles.join(', ')}</span>
+                {policies.map((p, i) => {
+                  const roles = safeRoles(p.roles);
+                  return (
+                    <div key={i} className="bg-white border border-slate-200 rounded-[2.5rem] p-8 hover:border-indigo-300 hover:shadow-2xl hover:shadow-indigo-100/50 transition-all group flex flex-col gap-8">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-6">
+                          <div className="w-14 h-14 bg-slate-50 text-slate-300 rounded-2xl flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all duration-500">
+                            <Lock size={24} />
+                          </div>
+                          <div>
+                            <h4 className="text-xl font-black text-slate-900 group-hover:text-indigo-600 transition-colors">{p.policyname}</h4>
+                            <div className="flex items-center gap-3 mt-1">
+                              <span className="text-[10px] font-black text-indigo-500 bg-indigo-50 px-2.5 py-1 rounded-lg uppercase tracking-widest border border-indigo-100">{p.tablename}</span>
+                              <span className="w-1.5 h-1.5 bg-slate-200 rounded-full" />
+                              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{p.cmd}</span>
+                              <span className="w-1.5 h-1.5 bg-slate-200 rounded-full" />
+                              <div className="flex items-center gap-1.5">
+                                {roles.includes('authenticated') ? <Users size={12} className="text-indigo-400" /> : roles.includes('anon') ? <User size={12} className="text-slate-400" /> : <Globe size={12} className="text-emerald-400" />}
+                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{roles.join(', ')}</span>
+                              </div>
                             </div>
                           </div>
                         </div>
+                        <div className="flex items-center gap-2">
+                           <button onClick={() => handleDelete(p.tablename, p.policyname)} className="p-3 text-slate-200 hover:text-rose-600 hover:bg-rose-50 rounded-2xl transition-all">
+                             <Trash2 size={20} />
+                           </button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                         <button onClick={() => handleDelete(p.tablename, p.policyname)} className="p-3 text-slate-200 hover:text-rose-600 hover:bg-rose-50 rounded-2xl transition-all">
-                           <Trash2 size={20} />
-                         </button>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="bg-slate-50 rounded-3xl p-6 border border-slate-100 flex flex-col gap-2">
+                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Eye size={12} /> READ VISIBILITY (USING)</span>
+                          <code className="text-xs font-mono text-slate-700 break-all">{p.qual || 'true'}</code>
+                        </div>
+                        <div className="bg-slate-50 rounded-3xl p-6 border border-slate-100 flex flex-col gap-2">
+                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Edit2 size={12} /> WRITE VALIDATION (WITH CHECK)</span>
+                          <code className="text-xs font-mono text-slate-700 break-all">{p.with_check || 'null'}</code>
+                        </div>
                       </div>
                     </div>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="bg-slate-50 rounded-3xl p-6 border border-slate-100 flex flex-col gap-2">
-                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Eye size={12} /> READ VISIBILITY (USING)</span>
-                        <code className="text-xs font-mono text-slate-700 break-all">{p.qual || 'true'}</code>
-                      </div>
-                      <div className="bg-slate-50 rounded-3xl p-6 border border-slate-100 flex flex-col gap-2">
-                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Edit2 size={12} /> WRITE VALIDATION (WITH CHECK)</span>
-                        <code className="text-xs font-mono text-slate-700 break-all">{p.with_check || 'null'}</code>
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
