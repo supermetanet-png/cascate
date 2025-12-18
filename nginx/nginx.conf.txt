@@ -32,18 +32,24 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        # Control Plane API
+        # Control Plane API (Gerenciamento de Projetos e Admin Auth)
         location /api/control/ {
+            # O "/" final é CRUCIAL: ele faz o Nginx remover "/api/control/" da URL
             proxy_pass http://backend_control:3000/;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        # Data Plane API
+        # Data Plane API (Interação com bancos de dados dos projetos)
         location /api/data/ {
+            # O "/" final faz o Nginx remover "/api/data/" da URL
             proxy_pass http://backend_data:3000/;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
         }
     }
 }
