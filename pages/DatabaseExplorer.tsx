@@ -201,7 +201,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
       const reader = new FileReader();
       reader.onload = async (evt) => {
         const bstr = evt.target?.result;
-        // Importante: Manter raw: false para que as datas convertidas do Excel venham formatadas
+        // Config: use cellDates: true para evitar problemas de timestamp/excel-serial
         const workbook = (window as any).XLSX.read(bstr, { type: 'binary', cellDates: true, dateNF: 'yyyy-mm-dd hh:mm:ss' });
         const sheetName = workbook.SheetNames[0];
         const rawData = (window as any).XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { raw: false });
@@ -213,13 +213,14 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         const existingTable = tables.find(t => t.name === fileName);
         if (!existingTable) {
           const sample = rawData[0] || {};
-          // Fix: Using any[] to allow additional properties like 'default' and 'primaryKey' during dynamic schema generation.
+          // Usar any[] para permitir propriedades dinâmicas
           const cols: any[] = Object.keys(sample).map(k => {
             const key = k.trim().replace(/[^a-z0-9]/gi, '_').toLowerCase();
             let type = 'text';
             const val = sample[k];
             if (!isNaN(Number(val)) && typeof val !== 'boolean') type = 'numeric';
-            if (typeof val === 'string' && !isNaN(Date.parse(val)) && val.includes('-')) type = 'timestamptz';
+            // Tentativa inteligente de detectar datas se vierem como string com hifen
+            if (typeof val === 'string' && val.includes('-') && !isNaN(Date.parse(val))) type = 'timestamptz';
             return { name: key, type, nullable: true };
           });
           
@@ -244,8 +245,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
             method: 'POST', 
             body: JSON.stringify({ data: sanitizedRow }) 
           }).catch(e => {
-            console.error('Row failed:', sanitizedRow, e.message);
-            // Continua para o próximo item
+            console.error('Row insert failed:', sanitizedRow, e.message);
           });
         }
 
@@ -309,7 +309,6 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
   useEffect(() => {
     const hideMenus = () => { 
       setContextMenu(null); 
-      // Não fechamos o export dropdown aqui para permitir o timer
     };
     window.addEventListener('click', hideMenus);
     return () => window.removeEventListener('click', hideMenus);
@@ -391,9 +390,9 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
                   <div className="relative">
                     <button onClick={handleExportClick} className="bg-white text-slate-700 border border-slate-200 px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-slate-50 transition-all"><Download size={14} /> EXPORT</button>
                     {showExportDropdown && (
-                      <div className="absolute right-0 top-full mt-2 bg-white border border-slate-200 rounded-[2rem] shadow-2xl p-2 z-[60] w-64 animate-in slide-in-from-top-2 border-slate-200">
-                        <button onClick={() => handleExport('csv')} className="w-full text-left px-5 py-4 text-[14px] font-black uppercase tracking-widest text-slate-600 hover:bg-slate-50 rounded-2xl flex items-center gap-3">.CSV Spreadsheet</button>
-                        <button onClick={() => handleExport('sql')} className="w-full text-left px-5 py-4 text-[14px] font-black uppercase tracking-widest text-slate-600 hover:bg-slate-50 rounded-2xl flex items-center gap-3">.SQL Dump</button>
+                      <div className="absolute right-0 top-full mt-2 bg-white border border-slate-200 rounded-[2.5rem] shadow-2xl p-2 z-[60] w-64 animate-in slide-in-from-top-2">
+                        <button onClick={() => handleExport('csv')} className="w-full text-left px-5 py-4 text-[18px] font-black uppercase tracking-widest text-slate-600 hover:bg-slate-50 rounded-2xl flex items-center gap-3">.CSV Spreadsheet</button>
+                        <button onClick={() => handleExport('sql')} className="w-full text-left px-5 py-4 text-[18px] font-black uppercase tracking-widest text-slate-600 hover:bg-slate-50 rounded-2xl flex items-center gap-3">.SQL Dump</button>
                       </div>
                     )}
                   </div>
@@ -482,19 +481,19 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         </main>
       </div>
 
-      {/* Custom Context Menu */}
+      {/* Custom Right-Click Menu */}
       {contextMenu && (
         <div 
           className="fixed z-[200] bg-white border border-slate-200 shadow-[0_30px_60px_rgba(0,0,0,0.15)] rounded-[2.5rem] p-3 w-64 animate-in fade-in zoom-in-95" 
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >
-          <button onClick={() => copyToClipboard(contextMenu.table)} className="w-full flex items-center gap-4 px-5 py-4 text-xs font-bold text-slate-600 hover:bg-slate-50 rounded-2xl transition-all text-left"><Copy size={16} /> Copy Name</button>
+          <button onClick={() => { copyToClipboard(contextMenu.table); setContextMenu(null); }} className="w-full flex items-center gap-4 px-5 py-4 text-xs font-bold text-slate-600 hover:bg-slate-50 rounded-2xl transition-all text-left"><Copy size={16} /> Copy Table Name</button>
           <button onClick={async () => {
             const data = await fetchWithAuth(`/api/data/${projectId}/tables/${contextMenu.table}/sql`);
             copyToClipboard(data.sql);
             setContextMenu(null);
-          }} className="w-full flex items-center gap-4 px-5 py-4 text-xs font-bold text-slate-600 hover:bg-slate-50 rounded-2xl transition-all text-left"><Code size={16} /> Copy DDL SQL</button>
+          }} className="w-full flex items-center gap-4 px-5 py-4 text-xs font-bold text-slate-600 hover:bg-slate-50 rounded-2xl transition-all text-left"><Code size={16} /> Copy Schema SQL</button>
           <button onClick={() => {
             setRenameState({ active: true, oldName: contextMenu.table, newName: contextMenu.table });
             setContextMenu(null);
@@ -508,7 +507,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         </div>
       )}
 
-      {/* Row Modal */}
+      {/* Contextual Modals */}
       {showRowModal && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[100] flex items-center justify-center p-8">
           <div className="bg-white rounded-[3.5rem] w-full max-w-2xl p-12 shadow-2xl border border-slate-100 animate-in zoom-in-95">
@@ -545,7 +544,6 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         </div>
       )}
 
-      {/* Import Modal */}
       {showImportModal && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-2xl z-[100] flex items-center justify-center p-8">
           <div className="bg-white rounded-[4rem] w-full max-w-2xl p-16 shadow-2xl border border-slate-100 animate-in zoom-in-95 text-center">
@@ -576,7 +574,6 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         </div>
       )}
 
-      {/* Delete/Purge Modal */}
       {deleteConfirm.active && (
         <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-xl z-[300] flex items-center justify-center p-8">
           <div className="bg-white rounded-[3.5rem] w-full max-w-lg p-12 text-center shadow-2xl border border-rose-100 animate-in zoom-in-95">
@@ -615,7 +612,6 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         </div>
       )}
 
-      {/* Rename Modal */}
       {renameState.active && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[300] flex items-center justify-center p-8">
           <div className="bg-white rounded-[3rem] w-full max-w-md p-10 animate-in zoom-in-95 shadow-2xl">
@@ -636,7 +632,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         </div>
       )}
       
-      {/* Create Table Modal */}
+      {/* Table Creator Modal */}
       {showCreateTable && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-2xl z-[100] flex items-center justify-center p-8">
           <div className="bg-white rounded-[4rem] w-full max-w-5xl max-h-[90vh] overflow-hidden border border-slate-200 flex flex-col animate-in zoom-in-95">

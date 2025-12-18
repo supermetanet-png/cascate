@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
@@ -200,6 +199,18 @@ app.get('/:slug/tables/:table/data', authenticateAdmin, async (req, res) => {
   } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
+app.post('/:slug/query', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  const { sql } = req.body;
+  try {
+    const result = await pool.query(sql);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.post('/:slug/tables/:table/rows', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
@@ -244,18 +255,22 @@ app.post('/:slug/tables', authenticateAdmin, async (req, res) => {
 app.get('/:slug/tables/:table/columns', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const result = await pool.query(`
-    SELECT column_name as name, data_type as type, is_nullable as nullable, column_default as default,
-    EXISTS (
-        SELECT 1 FROM information_schema.table_constraints tc 
-        JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name 
-        WHERE tc.table_name = $1 AND tc.constraint_type = 'PRIMARY KEY' AND kcu.column_name = columns.column_name
-    ) as "isPrimaryKey"
-    FROM information_schema.columns 
-    WHERE table_name = $1 AND table_schema = 'public'
-    ORDER BY ordinal_position
-  `, [req.params.table]);
-  res.json(result.rows);
+  try {
+    const result = await pool.query(`
+      SELECT column_name as name, data_type as type, is_nullable as nullable, column_default as default,
+      EXISTS (
+          SELECT 1 FROM information_schema.table_constraints tc 
+          JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name 
+          WHERE tc.table_name = $1 AND tc.constraint_type = 'PRIMARY KEY' AND kcu.column_name = columns.column_name
+      ) as "isPrimaryKey"
+      FROM information_schema.columns 
+      WHERE table_name = $1 AND table_schema = 'public'
+      ORDER BY ordinal_position
+    `, [req.params.table]);
+    res.json(result.rows);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.get('/:slug/auth/users', authenticateAdmin, async (req, res) => {
