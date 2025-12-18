@@ -19,10 +19,11 @@ const { Pool } = pg;
 const systemPool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL });
 const PORT = process.env.PORT || 3000;
 
-// Root de armazenamento físico
+// Root de armazenamento físico para multi-tenancy
 const STORAGE_ROOT = path.join(process.cwd(), 'storage');
 if (!fs.existsSync(STORAGE_ROOT)) fs.mkdirSync(STORAGE_ROOT, { recursive: true });
 
+// Configuração do Multer para uploads temporários
 const upload = multer({ dest: 'uploads/' });
 
 // --- HELPERS DE SEGURANÇA ---
@@ -53,7 +54,7 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
     if (!result.rows[0]) return res.status(404).json({ error: 'Project not found' });
     req.project = result.rows[0];
     
-    // Pool dinâmico isolado por base de dados
+    // Pool dinâmico isolado por base de dados (Physical Isolation)
     const dbName = req.project.db_name;
     req.projectPool = new Pool({ 
       connectionString: process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${dbName}`) 
@@ -66,7 +67,7 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
 };
 
 const cascataAuth = async (req: any, res: any, next: NextFunction) => {
-  // 1. Controle (Studio) - Usa o Secret Global do Sistema
+  // 1. Control Plane (Admin Studio)
   if (req.path.includes('/control/')) {
     const authHeader = req.headers['authorization'];
     if (!authHeader) return res.status(401).json({ error: 'Admin JWT required' });
@@ -77,24 +78,23 @@ const cascataAuth = async (req: any, res: any, next: NextFunction) => {
     } catch (e) { return res.status(401).json({ error: 'Invalid Admin Session' }); }
   }
 
-  // 2. Dados (API do Projeto) - Usa as chaves do projeto
+  // 2. Data Plane (Project APIs)
   const apikey = req.headers['apikey'] || req.query.apikey;
   if (!apikey) return res.status(401).json({ error: 'API Key required' });
 
-  // Service Role: Acesso total (Bypass RLS)
+  // Service Role: Full Access (Bypass RLS)
   if (apikey === req.project?.service_key) { 
     req.userRole = 'service_role'; 
     return next(); 
   }
 
-  // Anon / Authenticated Role
+  // Anon / Authenticated
   if (apikey === req.project?.anon_key) { 
     req.userRole = 'anon';
     const authHeader = req.headers['authorization'];
     if (authHeader) {
       try {
         const token = authHeader.split(' ')[1];
-        // Valida contra o secret específico do projeto
         const decoded = jwt.verify(token, req.project.jwt_secret);
         req.user = decoded;
         req.userRole = 'authenticated';
@@ -103,16 +103,16 @@ const cascataAuth = async (req: any, res: any, next: NextFunction) => {
     return next(); 
   }
   
-  res.status(401).json({ error: 'Invalid API Key for this instance' });
+  res.status(401).json({ error: 'Invalid API Key' });
 };
 
-// --- CONTROL PLANE: GESTÃO DE INFRAESTRUTURA ---
+// --- CONTROL PLANE ---
 
 app.post('/api/control/auth/login', async (req, res) => {
   const { email, password } = req.body;
   const result = await systemPool.query('SELECT * FROM system.admin_users WHERE email = $1', [email]);
   const admin = result.rows[0];
-  if (admin && admin.password_hash === password) { // Usar bcrypt em prod
+  if (admin && admin.password_hash === password) {
     const token = jwt.sign({ sub: admin.id, role: 'admin' }, process.env.SYSTEM_JWT_SECRET || 'secret');
     res.json({ token });
   } else {
@@ -129,9 +129,7 @@ app.post('/api/control/projects', async (req: any, res: any) => {
   const { name, slug } = req.body;
   const db_name = `cascata_db_${slug.replace(/-/g, '_')}`;
   try {
-    // Provisionamento físico
     await systemPool.query(`CREATE DATABASE ${db_name}`);
-    
     const anon_key = generateKey();
     const service_key = generateKey();
     const jwt_secret = generateKey();
@@ -142,20 +140,7 @@ app.post('/api/control/projects', async (req: any, res: any) => {
       [name, slug, db_name, anon_key, service_key, jwt_secret]
     );
 
-    // Setup inicial do banco do projeto
-    const tempPool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${db_name}`) });
-    await tempPool.query('CREATE SCHEMA IF NOT EXISTS auth');
-    await tempPool.query(`
-      CREATE TABLE IF NOT EXISTS auth.users (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        email TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
-      )
-    `);
-    await tempPool.end();
-
-    // Storage directory
+    // Storage Provisioning
     const projDir = path.join(STORAGE_ROOT, slug);
     if (!fs.existsSync(projDir)) fs.mkdirSync(projDir, { recursive: true });
 
@@ -165,7 +150,7 @@ app.post('/api/control/projects', async (req: any, res: any) => {
   }
 });
 
-// --- DATA PLANE: EXPLORAÇÃO E METADADOS ---
+// --- DATA PLANE: EXPLORER & STATS ---
 
 app.get('/api/data/:slug/stats', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
   const tables = await req.projectPool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'");
@@ -178,67 +163,12 @@ app.get('/api/data/:slug/stats', resolveProject as any, cascataAuth as any, asyn
   });
 });
 
-app.get('/api/data/:slug/tables', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
-  const result = await req.projectPool.query(`
-    SELECT table_name as name FROM information_schema.tables 
-    WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-  `);
+app.get('/api/data/:slug/logs', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
+  const result = await systemPool.query('SELECT * FROM system.api_logs WHERE project_slug = $1 ORDER BY created_at DESC LIMIT 100', [req.project.slug]);
   res.json(result.rows);
 });
 
-app.get('/api/data/:slug/tables/:table/columns', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
-  const { table } = req.params;
-  const result = await req.projectPool.query(`
-    SELECT column_name as name, data_type as type, is_nullable = 'YES' as nullable,
-           EXISTS (SELECT 1 FROM information_schema.key_column_usage kcu 
-                   WHERE kcu.table_name = $1 AND kcu.column_name = c.column_name) as "isPrimaryKey"
-    FROM information_schema.columns c WHERE table_name = $1
-  `, [table]);
-  res.json(result.rows);
-});
-
-// --- CRUD: OPERAÇÕES DE DADOS ---
-
-app.get('/api/data/:slug/tables/:table/data', resolveProject as any, cascataAuth as any, auditLogger as any, async (req: any, res: any) => {
-  const { table } = req.params;
-  const client = await req.projectPool.connect();
-  try {
-    if (req.userRole !== 'service_role') {
-      await client.query(`SET LOCAL auth.uid = '${req.user?.sub || ''}'`);
-    }
-    const result = await client.query(`SELECT * FROM public."${table}" LIMIT 100`);
-    res.json(result.rows);
-  } catch (e: any) { res.status(400).json({ error: e.message }); }
-  finally { client.release(); }
-});
-
-app.post('/api/data/:slug/tables/:table/rows', resolveProject as any, cascataAuth as any, auditLogger as any, async (req: any, res: any) => {
-  const { table } = req.params;
-  const { data } = req.body;
-  const keys = Object.keys(data);
-  const values = Object.values(data);
-  const cols = keys.map(k => `"${k}"`).join(', ');
-  const placeholders = keys.map((_, i) => `$${i + 1}`).join(', ');
-
-  try {
-    const result = await req.projectPool.query(
-      `INSERT INTO public."${table}" (${cols}) VALUES (${placeholders}) RETURNING *`, 
-      values
-    );
-    res.json(result.rows[0]);
-  } catch (e: any) { res.status(400).json({ error: e.message }); }
-});
-
-app.delete('/api/data/:slug/tables/:table/rows', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
-  const { table } = req.params;
-  const { pkColumn, pkValue } = req.body;
-  try {
-    await req.projectPool.query(`DELETE FROM public."${table}" WHERE "${pkColumn}" = $1`, [pkValue]);
-    res.json({ success: true });
-  } catch (e: any) { res.status(400).json({ error: e.message }); }
-});
-
-// --- RPC ENGINE: CHAMADAS DE LÓGICA ---
+// --- RPC & FUNCTIONS ---
 
 app.get('/api/data/:slug/functions', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
   const result = await req.projectPool.query(`
@@ -251,53 +181,28 @@ app.get('/api/data/:slug/functions', resolveProject as any, cascataAuth as any, 
 
 app.post('/api/data/:slug/rpc/:name', resolveProject as any, cascataAuth as any, auditLogger as any, async (req: any, res: any) => {
   const { name } = req.params;
-  const params = req.body; // { param1: val1 }
-  const keys = Object.keys(params);
-  const values = Object.values(params);
-  const placeholders = keys.map((_, i) => `$${i + 1}`).join(', ');
-
+  const params = req.body;
+  const placeholders = Object.keys(params).map((_, i) => `$${i + 1}`).join(', ');
   try {
-    const query = `SELECT * FROM public."${name}"(${placeholders})`;
-    const result = await req.projectPool.query(query, values);
+    const result = await req.projectPool.query(`SELECT * FROM public."${name}"(${placeholders})`, Object.values(params));
     res.json(result.rows);
-  } catch (e: any) {
-    res.status(400).json({ error: `Execution Error: ${e.message}` });
-  }
+  } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
-// --- AUTH ENGINE: USUÁRIOS FINAIS ---
+// --- AUTH FINA (PROJETOS) ---
 
 app.post('/api/data/:slug/auth/signup', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
   const { email, password } = req.body;
   try {
     const result = await req.projectPool.query(
       'INSERT INTO auth.users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at',
-      [email, password] // Usar bcrypt em prod
+      [email, password]
     );
-    // Fix: result.rows[0] used instead of undefined 'user'
     res.json(result.rows[0]);
   } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
-app.post('/api/data/:slug/auth/login', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
-  const { email, password } = req.body;
-  try {
-    const result = await req.projectPool.query('SELECT * FROM auth.users WHERE email = $1', [email]);
-    const user = result.rows[0];
-    if (user && user.password_hash === password) {
-      const token = jwt.sign(
-        { sub: user.id, email: user.email, role: 'authenticated' }, 
-        req.project.jwt_secret,
-        { expiresIn: '24h' }
-      );
-      res.json({ token, user: { id: user.id, email: user.email } });
-    } else {
-      res.status(401).json({ error: 'Invalid user credentials' });
-    }
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-// --- STORAGE ENGINE: OBJETOS ---
+// --- STORAGE ENGINE ---
 
 app.get('/api/data/:slug/storage/buckets', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
   const projDir = path.join(STORAGE_ROOT, req.project.slug);
@@ -313,41 +218,27 @@ app.post('/api/data/:slug/storage/buckets', resolveProject as any, cascataAuth a
   res.json({ success: true });
 });
 
-// Fix: casted upload.single('file') to any to resolve RequestHandler mismatch
 app.post('/api/data/:slug/storage/:bucket/upload', resolveProject as any, cascataAuth as any, upload.single('file') as any, async (req: any, res: any) => {
   const { bucket } = req.params;
-  if (!req.file) return res.status(400).json({ error: 'No file' });
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const dest = path.join(STORAGE_ROOT, req.project.slug, bucket, req.file.originalname);
   fs.renameSync(req.file.path, dest);
-  res.json({ success: true, url: `/api/data/${req.project.slug}/storage/${bucket}/object/${req.file.originalname}` });
+  res.json({ success: true, path: req.file.originalname });
 });
 
-app.get('/api/data/:slug/storage/:bucket/object/:path(*)', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
-  const { bucket, path: filePath } = req.params;
-  const fullPath = path.join(STORAGE_ROOT, req.project.slug, bucket, filePath);
-  if (fs.existsSync(fullPath)) {
-    res.sendFile(fullPath);
-  } else {
-    res.status(404).send('Not found');
-  }
+// --- DATA BROWSER CRUD ---
+
+app.get('/api/data/:slug/tables', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
+  const result = await req.projectPool.query("SELECT table_name as name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'");
+  res.json(result.rows);
 });
 
-// --- SISTEMA E METADADOS ---
-
-app.post('/api/data/:slug/ui-settings/:table', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
+app.get('/api/data/:slug/tables/:table/data', resolveProject as any, cascataAuth as any, auditLogger as any, async (req: any, res: any) => {
   const { table } = req.params;
-  const { settings } = req.body;
-  await systemPool.query(
-    'INSERT INTO system.ui_settings (project_slug, table_name, settings) VALUES ($1, $2, $3) ON CONFLICT (project_slug, table_name) DO UPDATE SET settings = $3',
-    [req.project.slug, table, settings]
-  );
-  res.json({ success: true });
+  try {
+    const result = await req.projectPool.query(`SELECT * FROM public."${table}" LIMIT 100`);
+    res.json(result.rows);
+  } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
-app.get('/api/data/:slug/ui-settings/:table', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
-  const { table } = req.params;
-  const result = await systemPool.query('SELECT settings FROM system.ui_settings WHERE project_slug = $1 AND table_name = $2', [req.project.slug, table]);
-  res.json(result.rows[0]?.settings || {});
-});
-
-app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] Ativo e Protegido na porta ${PORT}`));
+app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] Operacional na porta ${PORT}`));
