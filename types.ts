@@ -2,6 +2,7 @@
 export interface Project {
   id: string;
   name: string;
+  slug: string;
   status: 'healthy' | 'degraded' | 'error';
   database_url: string;
   api_url: string;

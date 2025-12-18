@@ -15,7 +15,8 @@ import {
   Server,
   Key,
   Bell,
-  Command
+  Command,
+  LogOut
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import ProjectDetail from './pages/ProjectDetail';
@@ -23,10 +24,12 @@ import DatabaseExplorer from './pages/DatabaseExplorer';
 import AuthConfig from './pages/AuthConfig';
 import RLSManager from './pages/RLSManager';
 import RPCManager from './pages/RPCManager';
+import Login from './pages/Login';
 
 const App: React.FC = () => {
   const [currentHash, setCurrentHash] = useState(window.location.hash || '#/projects');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(!!localStorage.getItem('cascata_token'));
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -49,7 +52,20 @@ const App: React.FC = () => {
     window.location.hash = hash;
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem('cascata_token');
+    setIsAuthenticated(false);
+    navigate('#/login');
+  };
+
+  if (!isAuthenticated && currentHash !== '#/login') {
+    navigate('#/login');
+  }
+
   const renderContent = () => {
+    if (currentHash === '#/login') return <Login onLoginSuccess={() => setIsAuthenticated(true)} />;
+    if (!isAuthenticated) return <Login onLoginSuccess={() => setIsAuthenticated(true)} />;
+
     if (currentHash === '#/projects' || currentHash === '') return <Dashboard onSelectProject={(id) => navigate(`#/project/${id}`)} />;
     
     if (currentHash.startsWith('#/project/')) {
@@ -69,6 +85,11 @@ const App: React.FC = () => {
 
     return <Dashboard onSelectProject={(id) => navigate(`#/project/${id}`)} />;
   };
+
+  // Se estiver na tela de login, não renderiza a sidebar
+  if (currentHash === '#/login' || !isAuthenticated) {
+    return renderContent();
+  }
 
   return (
     <div className="flex h-screen bg-[#F8FAFC]">
@@ -129,23 +150,16 @@ const App: React.FC = () => {
                 active={currentHash.includes('/auth')} 
                 onClick={() => navigate(`#/project/${selectedProjectId}/auth`)} 
               />
-              <SidebarItem 
-                icon={<Settings size={18} />} 
-                label="Project Config" 
-                active={false} 
-                onClick={() => {}} 
-              />
             </>
           )}
         </nav>
 
         <div className="p-4 border-t border-slate-100">
-          <button className="w-full flex items-center justify-between px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-500 hover:text-slate-900 transition-all mb-4 group">
+          <button onClick={handleLogout} className="w-full flex items-center justify-between px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-500 hover:text-rose-600 transition-all mb-4 group">
             <div className="flex items-center gap-2 text-xs font-medium">
-              <Command size={14} />
-              <span>Quick Actions</span>
+              <LogOut size={14} />
+              <span>Logout</span>
             </div>
-            <span className="text-[10px] bg-white border border-slate-200 px-1 rounded text-slate-400 group-hover:border-slate-300">⌘K</span>
           </button>
           <div className="flex items-center gap-3 px-2 py-1">
             <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center text-xs font-bold text-white shadow-md">AD</div>

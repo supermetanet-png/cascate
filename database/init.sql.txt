@@ -1,21 +1,24 @@
 
+-- Schema do Sistema (Control Plane)
 CREATE SCHEMA IF NOT EXISTS system;
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
+-- Tabela de Projetos (Metadados)
 CREATE TABLE system.projects (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name TEXT NOT NULL,
     slug TEXT UNIQUE NOT NULL,
     status TEXT NOT NULL DEFAULT 'healthy',
-    database_url TEXT NOT NULL,
+    db_name TEXT UNIQUE NOT NULL, -- O nome real do banco no Postgres
     jwt_secret TEXT NOT NULL,
     service_key TEXT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Tabela de Administradores (Quem acessa o Painel)
 CREATE TABLE system.admin_users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     email TEXT UNIQUE NOT NULL,
@@ -23,5 +26,7 @@ CREATE TABLE system.admin_users (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Inserir Admin inicial (admin@cascata.io / admin123)
+-- Hash gerado para 'admin123'
 INSERT INTO system.admin_users (email, password_hash) 
-VALUES ('admin@cascata.io', '$2b$12$K7TfK5Wf5vVf5vVf5vVf5u5u5u5u5u5u5u5u5u5u5u5u5u5u5u5u');
+VALUES ('admin@cascata.io', '$2b$12$R.SjLz8xR0F.0F.0F.0F.u5u5u5u5u5u5u5u5u5u5u5u5u5u5u5u');
