@@ -76,10 +76,7 @@ app.post('/projects', authenticateAdmin, async (req, res) => {
   const { name, slug } = req.body;
   const dbName = `cascata_proj_${slug.replace(/[^a-z0-9]/gi, '_')}`;
   try {
-    // 1. Criar banco físico
     await systemPool.query(`CREATE DATABASE ${dbName}`);
-    
-    // 2. Provisionar estrutura inicial no novo banco
     const url = new URL(process.env.SYSTEM_DATABASE_URL!);
     url.pathname = `/${dbName}`;
     const tempPool = new Pool({ connectionString: url.toString() });
@@ -95,7 +92,6 @@ app.post('/projects', authenticateAdmin, async (req, res) => {
     `);
     await tempPool.end();
 
-    // 3. Registrar no Control Plane
     const jwt_secret = Math.random().toString(36).substring(2, 20);
     const service_key = `ck_${Math.random().toString(36).substring(2, 20)}`;
     const result = await systemPool.query(
@@ -106,6 +102,28 @@ app.post('/projects', authenticateAdmin, async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: `Provisioning Error: ${err.message}` });
   }
+});
+
+// --- UI PERSISTENCE ---
+
+app.get('/:slug/ui-settings/:table', authenticateAdmin, async (req, res) => {
+  const result = await systemPool.query(
+    'SELECT settings FROM system.ui_settings WHERE project_slug = $1 AND table_name = $2',
+    [req.params.slug, req.params.table]
+  );
+  res.json(result.rows[0]?.settings || { columnOrder: [], columnWidths: {} });
+});
+
+app.post('/:slug/ui-settings/:table', authenticateAdmin, async (req, res) => {
+  const { settings } = req.body;
+  await systemPool.query(
+    `INSERT INTO system.ui_settings (project_slug, table_name, settings) 
+     VALUES ($1, $2, $3) 
+     ON CONFLICT (project_slug, table_name) 
+     DO UPDATE SET settings = $3, updated_at = now()`,
+    [req.params.slug, req.params.table, JSON.stringify(settings)]
+  );
+  res.json({ success: true });
 });
 
 // --- DATA PLANE (PER PROJECT) ---
@@ -135,6 +153,18 @@ app.get('/:slug/tables', authenticateAdmin, async (req, res) => {
     ORDER BY table_name
   `);
   res.json(result.rows);
+});
+
+// CORREÇÃO: Endpoint de dados que estava faltando
+app.get('/:slug/tables/:table/data', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  try {
+    const result = await pool.query(`SELECT * FROM public."${req.params.table}" LIMIT 500`);
+    res.json(result.rows);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.post('/:slug/query', authenticateAdmin, async (req, res) => {
