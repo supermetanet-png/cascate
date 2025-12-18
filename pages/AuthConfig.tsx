@@ -1,6 +1,5 @@
-
 import React, { useState, useEffect } from 'react';
-import { Mail, Globe, ShieldCheck, UserPlus, Lock, Key, Loader2, Calendar, MoreHorizontal, User } from 'lucide-react';
+import { Mail, Globe, ShieldCheck, UserPlus, Lock, Key, Loader2, Calendar, MoreHorizontal, User, AlertCircle, Info } from 'lucide-react';
 
 const AuthConfig: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [emailAuth, setEmailAuth] = useState(true);
@@ -9,17 +8,23 @@ const AuthConfig: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [showAddUser, setShowAddUser] = useState(false);
   const [newUser, setNewUser] = useState({ email: '', password: '' });
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchUsers = async () => {
     setLoading(true);
+    setError(null);
     try {
       const response = await fetch(`/api/data/${projectId}/auth/users`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('cascata_token')}` }
       });
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to fetch users');
+      }
       const data = await response.json();
       setUsers(data);
-    } catch (err) {
-      console.error('Failed to fetch users');
+    } catch (err: any) {
+      setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -37,13 +42,15 @@ const AuthConfig: React.FC<{ projectId: string }> = ({ projectId }) => {
         },
         body: JSON.stringify(newUser)
       });
-      if (response.ok) {
-        setShowAddUser(false);
-        setNewUser({ email: '', password: '' });
-        fetchUsers();
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to create user');
       }
-    } catch (err) {
-      console.error('Failed to create user');
+      setShowAddUser(false);
+      setNewUser({ email: '', password: '' });
+      fetchUsers();
+    } catch (err: any) {
+      setError(err.message);
     } finally {
       setSubmitting(false);
     }
@@ -55,7 +62,7 @@ const AuthConfig: React.FC<{ projectId: string }> = ({ projectId }) => {
 
   return (
     <div className="p-8 lg:p-12 max-w-6xl mx-auto w-full space-y-12 pb-32">
-      <div className="flex items-end justify-between">
+      <div className="flex items-end justify-between gap-8">
         <div>
           <h2 className="text-4xl font-black text-slate-900 tracking-tight">Identity Services</h2>
           <p className="text-slate-500 mt-2 text-lg">Manage users and authentication providers for {projectId}.</p>
@@ -68,12 +75,34 @@ const AuthConfig: React.FC<{ projectId: string }> = ({ projectId }) => {
         </button>
       </div>
 
+      {/* Identity Separation Notice */}
+      <div className="bg-slate-900 rounded-[2.5rem] p-8 text-white flex items-center gap-8 border border-white/5 relative overflow-hidden">
+         <div className="absolute top-0 right-0 p-8 opacity-10"><ShieldCheck size={140} /></div>
+         <div className="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center backdrop-blur-md">
+            <Info size={32} className="text-indigo-400" />
+         </div>
+         <div className="relative z-10">
+            <h4 className="font-black text-lg uppercase tracking-tight mb-1">Identity Separation Warning</h4>
+            <p className="text-slate-400 text-sm font-medium leading-relaxed max-w-2xl">
+              These are the end-users of the application <b>"{projectId}"</b>. They exist in the isolated <code>auth.users</code> table of this instance and <b>do not</b> have access to the Cascata Management Studio.
+            </p>
+         </div>
+      </div>
+
+      {error && (
+        <div className="bg-rose-50 border border-rose-100 p-6 rounded-[2rem] flex items-center gap-4 text-rose-600">
+          <AlertCircle size={24} />
+          <span className="text-sm font-bold uppercase tracking-widest">{error}</span>
+          <button onClick={() => fetchUsers()} className="ml-auto bg-rose-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Retry Connection</button>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* User List Table */}
         <div className="lg:col-span-2 space-y-6">
           <div className="flex items-center justify-between px-4">
             <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
-              Registered Users <span className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{users.length}</span>
+              Project Users <span className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{users.length}</span>
             </h3>
           </div>
 
@@ -180,9 +209,9 @@ const AuthConfig: React.FC<{ projectId: string }> = ({ projectId }) => {
       {/* Manual User Creation Modal */}
       {showAddUser && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[100] flex items-center justify-center p-6 animate-in fade-in duration-300">
-          <div className="bg-white rounded-[3rem] w-full max-w-md p-10 shadow-2xl border border-slate-200 animate-in zoom-in-95 duration-300">
+          <div className="bg-white rounded-[3rem] w-full max-md:p-8 p-10 shadow-2xl border border-slate-200 animate-in zoom-in-95 duration-300">
             <h2 className="text-2xl font-black text-slate-900 mb-2">New Identity</h2>
-            <p className="text-slate-500 mb-8 text-sm">Add a user manually to the auth.users table.</p>
+            <p className="text-slate-500 mb-8 text-sm">Add a user manually to the auth.users table of this project.</p>
             
             <form onSubmit={handleCreateUser} className="space-y-6">
               <div className="space-y-2">
