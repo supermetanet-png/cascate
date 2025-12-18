@@ -155,8 +155,9 @@ app.put('/:slug/tables/:table/rename', authenticateAdmin, async (req, res) => {
   if (!pool) return res.status(404).json({ error: 'Project not found' });
   const { newName } = req.body;
   try {
-    await pool.query(`ALTER TABLE public."${req.params.table}" RENAME TO "${newName}"`);
-    res.json({ success: true });
+    const sanitizedName = newName.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+    await pool.query(`ALTER TABLE public."${req.params.table}" RENAME TO "${sanitizedName}"`);
+    res.json({ success: true, newName: sanitizedName });
   } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
@@ -203,15 +204,20 @@ app.post('/:slug/tables/:table/rows', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
   const { data } = req.body;
-  // Filtrar apenas o que tem valor definido para permitir que o Postgres use DEFAULT
   const filteredData = Object.fromEntries(Object.entries(data).filter(([_, v]) => v !== null && v !== ''));
   const keys = Object.keys(filteredData).map(k => `"${k}"`).join(', ');
   const values = Object.values(filteredData);
   const placeholders = values.map((_, i) => `$${i + 1}`).join(', ');
   try {
-    await pool.query(`INSERT INTO public."${req.params.table}" (${keys}) VALUES (${placeholders})`, values);
+    if (keys.length > 0) {
+      await pool.query(`INSERT INTO public."${req.params.table}" (${keys}) VALUES (${placeholders})`, values);
+    } else {
+      await pool.query(`INSERT INTO public."${req.params.table}" DEFAULT VALUES`);
+    }
     res.json({ success: true });
-  } catch (err: any) { res.status(400).json({ error: err.message }); }
+  } catch (err: any) { 
+    res.status(400).json({ error: err.message }); 
+  }
 });
 
 app.post('/:slug/tables/:table/delete-rows', authenticateAdmin, async (req, res) => {
@@ -221,6 +227,73 @@ app.post('/:slug/tables/:table/delete-rows', authenticateAdmin, async (req, res)
   try {
     await pool.query(`DELETE FROM public."${req.params.table}" WHERE "${pkColumn}" = ANY($1)`, [ids]);
     res.json({ success: true });
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+app.post('/:slug/tables', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  const { name, columns } = req.body;
+  const colSql = columns.map((c: any) => `"${c.name}" ${c.type} ${c.primaryKey ? 'PRIMARY KEY' : ''} ${c.nullable ? '' : 'NOT NULL'} ${c.default ? 'DEFAULT ' + c.default : ''}`).join(', ');
+  try {
+    await pool.query(`CREATE TABLE public."${name}" (${colSql})`);
+    res.status(201).json({ success: true });
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+app.get('/:slug/tables/:table/columns', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  const result = await pool.query(`
+    SELECT column_name as name, data_type as type, is_nullable as nullable, column_default as default,
+    EXISTS (
+        SELECT 1 FROM information_schema.table_constraints tc 
+        JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name 
+        WHERE tc.table_name = $1 AND tc.constraint_type = 'PRIMARY KEY' AND kcu.column_name = columns.column_name
+    ) as "isPrimaryKey"
+    FROM information_schema.columns 
+    WHERE table_name = $1 AND table_schema = 'public'
+    ORDER BY ordinal_position
+  `, [req.params.table]);
+  res.json(result.rows);
+});
+
+app.get('/:slug/auth/users', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  const result = await pool.query('SELECT id, email, created_at FROM auth.users ORDER BY created_at DESC');
+  res.json(result.rows);
+});
+
+app.post('/:slug/auth/users', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  const { email, password } = req.body;
+  const hash = await bcrypt.hash(password, 10);
+  try {
+    await pool.query('INSERT INTO auth.users (email, password_hash) VALUES ($1, $2)', [email, hash]);
+    res.status(201).json({ success: true });
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+app.get('/:slug/policies', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  const result = await pool.query(`
+    SELECT schemaname, tablename, policyname, permissive, roles, cmd, qual, with_check 
+    FROM pg_policies WHERE schemaname = 'public'
+  `);
+  res.json(result.rows);
+});
+
+app.post('/:slug/policies', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  const { name, table, command, check } = req.body;
+  try {
+    await pool.query(`ALTER TABLE public."${table}" ENABLE ROW LEVEL SECURITY`);
+    await pool.query(`CREATE POLICY "${name}" ON public."${table}" FOR ${command} USING (${check})`);
+    res.status(201).json({ success: true });
   } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
