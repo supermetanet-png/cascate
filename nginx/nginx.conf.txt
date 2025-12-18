@@ -19,9 +19,23 @@ http {
     gzip on;
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
 
+    # Redirect HTTP to HTTPS
     server {
         listen 80;
         server_name _;
+        return 301 https://$host$request_uri;
+    }
+
+    server {
+        listen 443 ssl;
+        server_name _;
+
+        # SSL Certificates (Backend routes must write these files to /etc/nginx/ssl/)
+        ssl_certificate /etc/nginx/ssl/cascata_global.pem;
+        ssl_certificate_key /etc/nginx/ssl/cascata_global.key;
+
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers HIGH:!aNULL:!MD5;
 
         # Frontend Proxy
         location / {
@@ -32,9 +46,8 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        # Control Plane API (Gerenciamento de Projetos e Admin Auth)
+        # Control Plane API
         location /api/control/ {
-            # O "/" final é CRUCIAL: ele faz o Nginx remover "/api/control/" da URL
             proxy_pass http://backend_control:3000/;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
@@ -42,9 +55,8 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        # Data Plane API (Interação com bancos de dados dos projetos)
+        # Data Plane API
         location /api/data/ {
-            # O "/" final faz o Nginx remover "/api/data/" da URL
             proxy_pass http://backend_data:3000/;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;

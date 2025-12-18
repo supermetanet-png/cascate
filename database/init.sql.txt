@@ -47,5 +47,15 @@ CREATE TABLE system.admin_users (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Tabela de Certificados Globais (SSL)
+CREATE TABLE system.certificates (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    domain TEXT UNIQUE NOT NULL,
+    cert_pem TEXT NOT NULL,
+    key_pem TEXT NOT NULL,
+    provider TEXT NOT NULL, -- 'cloudflare', 'letsencrypt'
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 INSERT INTO system.admin_users (email, password_hash) 
-VALUES ('admin@cascata.io', '$2b$12$R.SjLz8xR0F.0F.0F.0F.u5u5u5u5u5u5u5u5u5u5u5u5u5u5u5u');
+VALUES ('admin@cascata.io', 'admin123');
