@@ -31,6 +31,7 @@ const rateLimitMap = new Map<string, { count: number, reset: number }>();
 // --- SECURITY MIDDLEWARES ---
 
 const securityGovernor = async (req: any, res: any, next: NextFunction) => {
+  // Governor only applies to Data Plane, not Control Plane
   if (!req.project || req.path.includes('/control/')) return next();
 
   const config = req.project.security_config || {};
@@ -51,7 +52,7 @@ const securityGovernor = async (req: any, res: any, next: NextFunction) => {
     rateLimitMap.set(key, record);
 
     if (record.count > rate_limit) {
-      return res.status(429).json({ error: 'Rate limit exceeded for this project instance.' });
+      return res.status(429).json({ error: 'Governor: Rate limit exceeded.' });
     }
   }
 
@@ -66,15 +67,16 @@ const securityGovernor = async (req: any, res: any, next: NextFunction) => {
   
   const operation = methodMap[req.method];
   const pathParts = req.path.split('/');
-  const table = pathParts[pathParts.indexOf('tables') + 1];
+  // Detect table name from standard Cascata path: /api/data/:slug/tables/:table/data
+  const tableIdx = pathParts.indexOf('tables');
+  const table = tableIdx !== -1 ? pathParts[tableIdx + 1] : null;
 
   if (table && operation && table_permissions[table]) {
     const perm = table_permissions[table];
     const role = req.userRole || 'anon';
     
-    // Check if the specific operation is allowed for the role
     if (perm[role] && perm[role][operation] === false) {
-      return res.status(403).json({ error: `Governor: Access Denied. Operation '${operation}' is disabled for '${role}' on table '${table}'.` });
+      return res.status(403).json({ error: `Governor: Operation '${operation}' disabled for '${role}' on table '${table}'.` });
     }
   }
 
@@ -89,46 +91,47 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
   const slugFromUrl = pathParts[3]; 
 
   try {
-    // 1. Domain-First Resolution (Binding check)
+    // 1. Domain Locking Logic
     let projectResult = await systemPool.query('SELECT * FROM system.projects WHERE custom_domain = $1', [host]);
     
     if (projectResult.rowCount > 0) {
       req.project = projectResult.rows[0];
-      // If the domain is bound to a project, prevent accessing another project via slug through this host
+      // Prevent cross-talk: if accessed by bound domain, slug must match
       if (slugFromUrl && slugFromUrl !== req.project.slug) {
-        return res.status(403).json({ error: 'Domain Binding Violation: This endpoint is restricted to its authorized domain.' });
+        return res.status(403).json({ error: 'Domain Binding Violation.' });
       }
     } else if (slugFromUrl) {
-      // 2. Slug-based fallback
       projectResult = await systemPool.query('SELECT * FROM system.projects WHERE slug = $1', [slugFromUrl]);
       if (projectResult.rows[0]?.custom_domain) {
-        // SECURITY GATE: If a project has a custom domain, slug access is DISALLOWED to prevent IP-based bypassing
-        return res.status(403).json({ error: 'Project Locked: This instance requires access via its authorized custom domain.' });
+        // Forbidden: accessing a domain-locked project via shared IP/slug
+        return res.status(403).json({ error: 'Project requires access via authorized custom domain.' });
       }
       req.project = projectResult.rows[0];
     }
 
     if (!req.project) {
-      if (req.path.startsWith('/api/data/')) return res.status(404).json({ error: 'Project not found or domain unauthorized.' });
+      if (req.path.startsWith('/api/data/')) return res.status(404).json({ error: 'Project context not found.' });
       return next();
     }
 
-    const dbName = req.project.db_name;
-    req.projectPool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${dbName}`) });
+    req.projectPool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${req.project.db_name}`) });
     next();
   } catch (e) { 
-    res.status(500).json({ error: 'Gateway Resolution Error' }); 
+    res.status(500).json({ error: 'Project Resolution Failure' }); 
   }
 };
 
 const cascataAuth = async (req: any, res: any, next: NextFunction) => {
+  // CRITICAL FIX: Whitelist login route from auth check
+  if (req.path === '/api/control/auth/login') return next();
+
   if (req.path.includes('/control/')) {
     const authHeader = req.headers['authorization'];
     if (!authHeader) return res.status(401).json({ error: 'Admin Access Required' });
     try {
       jwt.verify(authHeader.split(' ')[1], process.env.SYSTEM_JWT_SECRET || 'secret');
       return next();
-    } catch (e) { return res.status(401).json({ error: 'Invalid Session' }); }
+    } catch (e) { return res.status(401).json({ error: 'Invalid Admin Session' }); }
   }
 
   const apikey = req.headers['apikey'] || req.query.apikey || req.headers['authorization']?.split(' ')[1];
@@ -153,19 +156,26 @@ app.use(resolveProject as any);
 app.use(cascataAuth as any);
 app.use(securityGovernor as any);
 
-// --- CONTROL PLANE ENDPOINTS ---
+// --- CONTROL PLANE ---
 
-app.post('/api/control/auth/login', async (req, res) => {
+app.post('/api/control/auth/login', async (req: any, res: any) => {
   const { email, password } = req.body;
-  const result = await systemPool.query('SELECT * FROM system.admin_users WHERE email = $1', [email]);
-  const admin = result.rows[0];
-  if (admin && admin.password_hash === password) {
-    const token = jwt.sign({ sub: admin.id, role: 'admin' }, process.env.SYSTEM_JWT_SECRET || 'secret');
-    res.json({ token });
-  } else res.status(401).json({ error: 'Invalid credentials' });
+  try {
+    const result = await systemPool.query('SELECT * FROM system.admin_users WHERE email = $1', [email]);
+    const admin = result.rows[0];
+    // Plain text comparison for default init, ideally use bcrypt in production
+    if (admin && admin.password_hash === password) {
+      const token = jwt.sign({ sub: admin.id, role: 'admin' }, process.env.SYSTEM_JWT_SECRET || 'secret');
+      res.json({ token });
+    } else {
+      res.status(401).json({ error: 'Invalid admin credentials' });
+    }
+  } catch (e: any) {
+    res.status(500).json({ error: 'Internal Auth Error' });
+  }
 });
 
-app.get('/api/control/projects', async (req, res) => {
+app.get('/api/control/projects', async (req: any, res: any) => {
   const result = await systemPool.query('SELECT * FROM system.projects ORDER BY created_at DESC');
   res.json(result.rows);
 });
@@ -181,13 +191,12 @@ app.patch('/api/control/projects/:slug', async (req: any, res: any) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-// Fixed Webhook 404 Routes
-app.get('/api/control/projects/:slug/webhooks', async (req, res) => {
+app.get('/api/control/projects/:slug/webhooks', async (req: any, res: any) => {
   const result = await systemPool.query('SELECT * FROM system.webhooks WHERE project_slug = $1', [req.params.slug]);
   res.json(result.rows);
 });
 
-app.post('/api/control/projects/:slug/webhooks', async (req, res) => {
+app.post('/api/control/projects/:slug/webhooks', async (req: any, res: any) => {
   const { target_url, event_type, table_name } = req.body;
   const result = await systemPool.query(
     'INSERT INTO system.webhooks (project_slug, target_url, event_type, table_name) VALUES ($1, $2, $3, $4) RETURNING *',
@@ -222,31 +231,31 @@ app.post('/api/control/projects', async (req: any, res: any) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-// --- DATA PLANE ENDPOINTS ---
-
-app.post('/api/data/:slug/query', async (req: any, res: any) => {
-  try {
-    const result = await req.projectPool.query(req.body.sql);
-    res.json(result);
-  } catch (e: any) { res.status(400).json({ error: e.message }); }
-});
+// --- DATA PLANE ---
 
 app.get('/api/data/:slug/tables', async (req: any, res: any) => {
   const result = await req.projectPool.query("SELECT table_name as name FROM information_schema.tables WHERE table_schema = 'public'");
   res.json(result.rows);
 });
 
-app.get('/api/data/:slug/policies', async (req: any, res: any) => {
-  const result = await req.projectPool.query(`SELECT schemaname, tablename, policyname, roles, cmd, qual, with_check FROM pg_policies WHERE schemaname = 'public'`);
+app.get('/api/data/:slug/tables/:table/columns', async (req: any, res: any) => {
+  const result = await req.projectPool.query(`
+    SELECT column_name as name, data_type as type, is_nullable = 'YES' as "nullable",
+    EXISTS (SELECT 1 FROM information_schema.key_column_usage kcu JOIN information_schema.table_constraints tc ON kcu.constraint_name = tc.constraint_name WHERE kcu.table_name = $1 AND kcu.column_name = column_name AND tc.constraint_type = 'PRIMARY KEY') as "isPrimaryKey"
+    FROM information_schema.columns WHERE table_name = $1
+  `, [req.params.table]);
   res.json(result.rows);
 });
 
-app.post('/api/data/:slug/rpc/:name', async (req: any, res: any) => {
-  const params = req.body;
-  const placeholders = Object.keys(params).map((_, i) => `$${i + 1}`).join(', ');
+app.get('/api/data/:slug/tables/:table/data', async (req: any, res: any) => {
+  const result = await req.projectPool.query(`SELECT * FROM public."${req.params.table}" LIMIT 1000`);
+  res.json(result.rows);
+});
+
+app.post('/api/data/:slug/query', async (req: any, res: any) => {
   try {
-    const result = await req.projectPool.query(`SELECT * FROM public."${req.params.name}"(${placeholders})`, Object.values(params));
-    res.json(result.rows);
+    const result = await req.projectPool.query(req.body.sql);
+    res.json(result);
   } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
