@@ -23,7 +23,6 @@ http {
         listen 80;
         server_name _;
 
-        # Management Studio Frontend
         location / {
             proxy_pass http://frontend:80;
             proxy_set_header Host $host;
@@ -32,14 +31,12 @@ http {
             try_files $uri $uri/ /index.html;
         }
 
-        # Control Plane API
         location /api/control/ {
             proxy_pass http://backend_control:3000/;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
         }
 
-        # Data Plane API
         location /api/data/ {
             proxy_pass http://backend_data:3000/;
             proxy_set_header Host $host;

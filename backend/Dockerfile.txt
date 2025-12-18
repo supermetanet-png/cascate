@@ -1,7 +1,7 @@
 
 FROM node:20-alpine
 WORKDIR /app
-# O contexto de build é a raiz do projeto, então acessamos backend/
+# Referência correta ao package.json sem .txt
 COPY backend/package*.json ./backend/
 WORKDIR /app/backend
 RUN npm install
