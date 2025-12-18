@@ -35,6 +35,7 @@ services:
     environment:
       - SERVICE_MODE=DATA_PLANE
       - SYSTEM_DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@db:5432/${DB_NAME}
+      - SYSTEM_JWT_SECRET=${SYSTEM_JWT_SECRET}
       - PORT=3000
     depends_on:
       - db

@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Database, Search, Play, Table as TableIcon, Loader2, AlertCircle, Plus, Columns, Settings, Trash2, X, Terminal, Code } from 'lucide-react';
 
 const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
@@ -15,24 +15,46 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [error, setError] = useState<string | null>(null);
   const [showCreateTable, setShowCreateTable] = useState(false);
   
-  // Table Builder State
   const [newTableName, setNewTableName] = useState('');
   const [newTableColumns, setNewTableColumns] = useState<any[]>([
     { name: 'id', type: 'uuid', primaryKey: true, nullable: false, default: 'gen_random_uuid()' },
     { name: 'created_at', type: 'timestamptz', primaryKey: false, nullable: false, default: 'now()' }
   ]);
 
+  const fetchWithAuth = useCallback(async (url: string, options: any = {}) => {
+    const token = localStorage.getItem('cascata_token');
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        ...options.headers,
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (response.status === 401) {
+      localStorage.removeItem('cascata_token');
+      window.location.hash = '#/login';
+      throw new Error('Sessão expirada. Redirecionando...');
+    }
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.error || `Erro ${response.status}`);
+    }
+
+    return response.json();
+  }, []);
+
   const fetchTables = async () => {
     setLoading(true);
+    setError(null);
     try {
-      const response = await fetch(`/api/data/${projectId}/tables`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('cascata_token')}` }
-      });
-      const data = await response.json();
+      const data = await fetchWithAuth(`/api/data/${projectId}/tables`);
       setTables(data);
       if (data.length > 0 && !selectedTable) setSelectedTable(data[0].name);
-    } catch (err) {
-      setError('System connection failure');
+    } catch (err: any) {
+      setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -42,17 +64,8 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
     setLoading(true);
     setError(null);
     try {
-      const [dataRes, colsRes] = await Promise.all([
-        fetch(`/api/data/${projectId}/tables/${tableName}/data`, {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('cascata_token')}` }
-        }),
-        fetch(`/api/data/${projectId}/tables/${tableName}/columns`, {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('cascata_token')}` }
-        })
-      ]);
-      const data = await dataRes.json();
-      const cols = await colsRes.json();
-      if (data.error) throw new Error(data.error);
+      const data = await fetchWithAuth(`/api/data/${projectId}/tables/${tableName}/data`);
+      const cols = await fetchWithAuth(`/api/data/${projectId}/tables/${tableName}/columns`);
       setTableData(data);
       setColumns(cols);
     } catch (err: any) {
@@ -66,16 +79,10 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
     setExecuting(true);
     setError(null);
     try {
-      const response = await fetch(`/api/data/${projectId}/query`, {
+      const data = await fetchWithAuth(`/api/data/${projectId}/query`, {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('cascata_token')}`
-        },
         body: JSON.stringify({ sql: query }),
       });
-      const data = await response.json();
-      if (data.error) throw new Error(data.error);
       setQueryResult(data);
       if (['CREATE', 'DROP', 'ALTER'].some(cmd => data.command?.includes(cmd))) fetchTables();
     } catch (err: any) {
@@ -88,16 +95,10 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
   const handleCreateTable = async () => {
     setExecuting(true);
     try {
-      const response = await fetch(`/api/data/${projectId}/tables`, {
+      await fetchWithAuth(`/api/data/${projectId}/tables`, {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('cascata_token')}`
-        },
         body: JSON.stringify({ name: newTableName, columns: newTableColumns }),
       });
-      const data = await response.json();
-      if (data.error) throw new Error(data.error);
       setShowCreateTable(false);
       setNewTableName('');
       fetchTables();
@@ -148,7 +149,6 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar Robusta */}
         <aside className="w-80 border-r border-slate-200 bg-white flex flex-col">
           <div className="p-6">
             <div className="relative group">
@@ -174,7 +174,6 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
                   <TableIcon size={18} className={selectedTable === t.name ? 'text-white' : 'text-slate-300 group-hover:text-indigo-400'} />
                   <span className="text-sm font-bold tracking-tight">{t.name}</span>
                 </div>
-                {selectedTable === t.name && <div className="w-1.5 h-1.5 rounded-full bg-white animate-pulse"></div>}
               </button>
             ))}
           </div>
@@ -283,11 +282,9 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
                     <span className="text-xs font-bold text-emerald-500 bg-emerald-500/10 px-3 py-1 rounded-lg">Status: {queryResult.command} OK</span>
                     <span className="text-xs font-bold text-slate-500">Latency: {queryResult.duration}</span>
                   </div>
-                  <div className="space-y-4">
-                     <pre className="text-xs text-slate-300 leading-6">
-                        {JSON.stringify(queryResult.rows, null, 2)}
-                     </pre>
-                  </div>
+                  <pre className="text-xs text-slate-300 leading-6">
+                    {JSON.stringify(queryResult.rows, null, 2)}
+                  </pre>
                 </div>
               )}
             </div>
@@ -295,7 +292,6 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         </main>
       </div>
 
-      {/* No-Code Table Builder Modal (Robust) */}
       {showCreateTable && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-2xl z-[100] flex items-center justify-center p-8 animate-in fade-in duration-500">
           <div className="bg-white rounded-[3.5rem] w-full max-w-5xl max-h-[90vh] overflow-hidden shadow-[0_0_100px_rgba(0,0,0,0.5)] border border-slate-200 flex flex-col animate-in zoom-in-95">
