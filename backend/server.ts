@@ -110,7 +110,25 @@ app.post('/api/control/projects', cascataAuth as any, async (req: any, res: any)
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-// --- DATA PLANE ---
+// --- DATA PLANE DISCOVERY (NECESSARY FOR RPC MANAGER) ---
+
+app.get('/api/data/:slug/functions', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
+  const result = await req.projectPool.query(`
+    SELECT routine_name as name, routine_type as type 
+    FROM information_schema.routines 
+    WHERE routine_schema = 'public'
+  `);
+  res.json(result.rows);
+});
+
+app.get('/api/data/:slug/triggers', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
+  const result = await req.projectPool.query(`
+    SELECT trigger_name as name, event_manipulation as event, event_object_table as table 
+    FROM information_schema.triggers 
+    WHERE trigger_schema = 'public'
+  `);
+  res.json(result.rows);
+});
 
 app.get('/api/data/:slug/stats', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
   const tables = await req.projectPool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'");
@@ -124,7 +142,7 @@ app.get('/api/data/:slug/logs', resolveProject as any, cascataAuth as any, async
   res.json(result.rows);
 });
 
-// --- LOGIC ENGINE (ASSETS) ---
+// --- ASSETS & LOGIC ---
 
 app.get('/api/data/:slug/assets', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
   const result = await systemPool.query('SELECT * FROM system.assets WHERE project_slug = $1', [req.project.slug]);
@@ -147,7 +165,16 @@ app.delete('/api/data/:slug/assets/:id', resolveProject as any, cascataAuth as a
   res.json({ success: true });
 });
 
-// --- DATA BROWSER ---
+// --- DATA BROWSER & QUERY ---
+
+app.post('/api/data/:slug/query', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
+  const { sql } = req.body;
+  const start = Date.now();
+  try {
+    const result = await req.projectPool.query(sql);
+    res.json({ ...result, duration: Date.now() - start });
+  } catch (e: any) { res.status(400).json({ error: e.message }); }
+});
 
 app.get('/api/data/:slug/tables', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
   const result = await req.projectPool.query("SELECT table_name as name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'");
@@ -166,19 +193,19 @@ app.get('/api/data/:slug/tables/:table/data', resolveProject as any, cascataAuth
   } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
-// --- UI SETTINGS ---
-
-app.get('/api/data/:slug/ui-settings/:table', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
-  const result = await systemPool.query('SELECT settings FROM system.ui_settings WHERE project_slug = $1 AND table_name = $2', [req.project.slug, req.params.table]);
-  res.json(result.rows[0]?.settings || {});
+app.post('/api/data/:slug/tables/:table/rows', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
+  const { table } = req.params;
+  const { data } = req.body;
+  const keys = Object.keys(data);
+  const placeholders = keys.map((_, i) => `$${i + 1}`).join(',');
+  const columns = keys.map(k => `"${k}"`).join(',');
+  try {
+    const result = await req.projectPool.query(`INSERT INTO public."${table}" (${columns}) VALUES (${placeholders}) RETURNING *`, Object.values(data));
+    res.json(result.rows[0]);
+  } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
-app.post('/api/data/:slug/ui-settings/:table', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
-  await systemPool.query('INSERT INTO system.ui_settings (project_slug, table_name, settings) VALUES ($1, $2, $3) ON CONFLICT (project_slug, table_name) DO UPDATE SET settings = $3', [req.project.slug, req.params.table, req.body.settings]);
-  res.json({ success: true });
-});
-
-// --- AUTH FINA ---
+// --- AUTH & STORAGE ---
 
 app.get('/api/data/:slug/auth/users', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
   const result = await req.projectPool.query('SELECT id, email, created_at FROM auth.users');
@@ -190,8 +217,6 @@ app.post('/api/data/:slug/auth/users', resolveProject as any, cascataAuth as any
   const result = await req.projectPool.query('INSERT INTO auth.users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at', [email, password]);
   res.json(result.rows[0]);
 });
-
-// --- STORAGE ---
 
 app.get('/api/data/:slug/storage/buckets', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
   const p = path.join(STORAGE_ROOT, req.project.slug);
@@ -207,4 +232,4 @@ app.post('/api/data/:slug/storage/:bucket/upload', resolveProject as any, cascat
   res.json({ success: true, path: req.file.originalname });
 });
 
-app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v2 Operacional na porta ${PORT}`));
+app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v2.1 Operacional na porta ${PORT}`));
