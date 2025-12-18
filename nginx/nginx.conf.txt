@@ -23,7 +23,7 @@ http {
         listen 80;
         server_name _;
 
-        # Let's Encrypt Challenge
+        # Suporte para Let's Encrypt ACME Challenge
         location /.well-known/acme-challenge/ {
             root /var/www/certbot;
         }
@@ -37,7 +37,7 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        # Control Plane API
+        # Control Plane API (Corrigido para remover o prefixo ao chegar no backend)
         location /api/control/ {
             proxy_pass http://backend_control:3000/;
             proxy_set_header Host $host;
@@ -56,12 +56,12 @@ http {
         }
     }
 
-    # SSL Config (Initially commented to avoid crash if files are missing)
+    # Bloco SSL (Descomentar após gerar os certificados)
     # server {
     #     listen 443 ssl;
     #     server_name _;
     #     ssl_certificate /etc/nginx/ssl/cascata_global.pem;
     #     ssl_certificate_key /etc/nginx/ssl/cascata_global.key;
-    #     ... 
+    #     ...
     # }
 }
