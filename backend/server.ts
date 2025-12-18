@@ -231,6 +231,28 @@ app.post('/:slug/tables/:table/rows', authenticateAdmin, async (req, res) => {
   }
 });
 
+app.put('/:slug/tables/:table/rows', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  const { data, pkColumn, pkValue } = req.body;
+  
+  // Removemos a PK do set de dados para não tentar atualizar a própria PK
+  const updateData = { ...data };
+  delete updateData[pkColumn];
+  
+  const entries = Object.entries(updateData);
+  const setClause = entries.map(([k], i) => `"${k}" = $${i + 1}`).join(', ');
+  const values = entries.map(([_, v]) => v);
+  values.push(pkValue); // A PK será o último parâmetro
+  
+  try {
+    await pool.query(`UPDATE public."${req.params.table}" SET ${setClause} WHERE "${pkColumn}" = $${values.length}`, values);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.post('/:slug/tables/:table/delete-rows', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });

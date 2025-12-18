@@ -1,6 +1,16 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Database, Search, Play, Table as TableIcon, Loader2, AlertCircle, Plus, X, Terminal, Code, Trash2, Download, Upload, MoreHorizontal, Copy, Edit, CheckSquare, Square, CheckCircle2, Calendar, Wand2 } from 'lucide-react';
 
+// Fallback UUID generator for non-secure contexts (HTTP via IP)
+const getUUID = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+};
+
 const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [activeTab, setActiveTab] = useState<'tables' | 'query'>('tables');
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
@@ -18,6 +28,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [showCreateTable, setShowCreateTable] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showRowModal, setShowRowModal] = useState(false);
+  const [isEditingRow, setIsEditingRow] = useState(false);
   const [showExportDropdown, setShowExportDropdown] = useState(false);
   const exportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -183,10 +194,19 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
   const handleRowAction = async () => {
     setExecuting(true);
     try {
-      await fetchWithAuth(`/api/data/${projectId}/tables/${selectedTable}/rows`, {
-        method: 'POST',
-        body: JSON.stringify({ data: currentRowData })
+      const url = `/api/data/${projectId}/tables/${selectedTable}/rows`;
+      const method = isEditingRow ? 'PUT' : 'POST';
+      const body = isEditingRow ? { 
+        data: currentRowData, 
+        pkColumn: pkCol, 
+        pkValue: currentRowData[pkCol] 
+      } : { data: currentRowData };
+
+      await fetchWithAuth(url, {
+        method,
+        body: JSON.stringify(body)
       });
+      
       setShowRowModal(false);
       setCurrentRowData({});
       fetchTableDetails(selectedTable!);
@@ -201,7 +221,6 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
       const reader = new FileReader();
       reader.onload = async (evt) => {
         const bstr = evt.target?.result;
-        // Config: use cellDates: true para evitar problemas de timestamp/excel-serial
         const workbook = (window as any).XLSX.read(bstr, { type: 'binary', cellDates: true, dateNF: 'yyyy-mm-dd hh:mm:ss' });
         const sheetName = workbook.SheetNames[0];
         const rawData = (window as any).XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { raw: false });
@@ -209,17 +228,14 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         const fileName = file.name.split('.')[0].replace(/[^a-z0-9]/gi, '_').toLowerCase();
         let targetTable = fileName;
 
-        // Verificar se a tabela existe
         const existingTable = tables.find(t => t.name === fileName);
         if (!existingTable) {
           const sample = rawData[0] || {};
-          // Usar any[] para permitir propriedades dinâmicas
           const cols: any[] = Object.keys(sample).map(k => {
             const key = k.trim().replace(/[^a-z0-9]/gi, '_').toLowerCase();
             let type = 'text';
             const val = sample[k];
             if (!isNaN(Number(val)) && typeof val !== 'boolean') type = 'numeric';
-            // Tentativa inteligente de detectar datas se vierem como string com hifen
             if (typeof val === 'string' && val.includes('-') && !isNaN(Date.parse(val))) type = 'timestamptz';
             return { name: key, type, nullable: true };
           });
@@ -235,7 +251,6 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
           await fetchTables();
         }
 
-        // Popular dados sanitizando chaves
         for (const row of rawData) {
           const sanitizedRow = Object.fromEntries(
             Object.entries(row).map(([k, v]) => [k.trim().replace(/[^a-z0-9]/gi, '_').toLowerCase(), v])
@@ -380,9 +395,10 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
                   <button onClick={() => {
                     const initialData: Record<string, string> = {};
                     columns.forEach(c => {
-                      if (c.name === 'id' && c.type === 'uuid') initialData[c.name] = crypto.randomUUID();
+                      if (c.name === 'id' && c.type === 'uuid') initialData[c.name] = getUUID();
                     });
                     setCurrentRowData(initialData);
+                    setIsEditingRow(false);
                     setShowRowModal(true);
                   }} disabled={!selectedTable} className="bg-slate-900 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-slate-800 disabled:opacity-50"><Plus size={14} /> ADD ROW</button>
                   <button onClick={() => setShowImportModal(true)} className="bg-white text-slate-700 border border-slate-200 px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-slate-50 transition-all"><Upload size={14} /> IMPORT</button>
@@ -436,9 +452,17 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
                           const idVal = row[pkCol];
                           const isSelected = selectedRows.has(idVal);
                           return (
-                            <tr key={i} className={`hover:bg-indigo-50/30 transition-colors ${isSelected ? 'bg-indigo-50' : ''}`}>
+                            <tr 
+                              key={i} 
+                              onDoubleClick={() => {
+                                setCurrentRowData({ ...row });
+                                setIsEditingRow(true);
+                                setShowRowModal(true);
+                              }}
+                              className={`hover:bg-indigo-50/30 transition-colors cursor-pointer ${isSelected ? 'bg-indigo-50' : ''}`}
+                            >
                               <td className="px-6 py-5 text-center border-r border-slate-100">
-                                <button onClick={() => toggleRow(idVal)} className={`${isSelected ? 'text-indigo-600' : 'text-slate-200'}`}>
+                                <button onClick={(e) => { e.stopPropagation(); toggleRow(idVal); }} className={`${isSelected ? 'text-indigo-600' : 'text-slate-200'}`}>
                                   {isSelected ? <CheckSquare size={18} /> : <Square size={18} />}
                                 </button>
                               </td>
@@ -507,11 +531,11 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         </div>
       )}
 
-      {/* Contextual Modals */}
+      {/* Row Modal */}
       {showRowModal && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[100] flex items-center justify-center p-8">
           <div className="bg-white rounded-[3.5rem] w-full max-w-2xl p-12 shadow-2xl border border-slate-100 animate-in zoom-in-95">
-            <h3 className="text-3xl font-black text-slate-900 tracking-tighter mb-8">Insert Record</h3>
+            <h3 className="text-3xl font-black text-slate-900 tracking-tighter mb-8">{isEditingRow ? 'Edit Record' : 'Insert Record'}</h3>
             <div className="space-y-6 max-h-[50vh] overflow-y-auto pr-4">
               {columns.map(col => (
                 <div key={col.name} className="space-y-2">
@@ -519,10 +543,20 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">{col.name} ({col.type})</label>
                     <div className="flex gap-2">
                        {col.type === 'uuid' && (
-                         <button onClick={() => setCurrentRowData({ ...currentRowData, [col.name]: crypto.randomUUID() })} className="text-[9px] font-black text-indigo-600 uppercase flex items-center gap-1 hover:text-indigo-800 transition-all"><Wand2 size={10} /> Gen UUID</button>
+                         <button onClick={() => setCurrentRowData({ ...currentRowData, [col.name]: getUUID() })} className="text-[9px] font-black text-indigo-600 uppercase flex items-center gap-1 hover:text-indigo-800 transition-all"><Wand2 size={10} /> Gen UUID</button>
                        )}
                        {col.type.includes('timestamp') && (
-                         <button onClick={() => setCurrentRowData({ ...currentRowData, [col.name]: new Date().toISOString() })} className="text-[9px] font-black text-emerald-600 uppercase flex items-center gap-1 hover:text-emerald-800 transition-all"><Calendar size={10} /> Now</button>
+                         <button 
+                            onClick={() => {
+                              // Format correctly for datetime-local input YYYY-MM-DDTHH:mm
+                              const now = new Date();
+                              const formatted = now.toISOString().slice(0, 16);
+                              setCurrentRowData({ ...currentRowData, [col.name]: formatted });
+                            }} 
+                            className="text-[9px] font-black text-emerald-600 uppercase flex items-center gap-1 hover:text-emerald-800 transition-all"
+                         >
+                           <Calendar size={10} /> Now
+                         </button>
                        )}
                     </div>
                   </div>
@@ -530,20 +564,24 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
                     type={col.type.includes('timestamp') ? 'datetime-local' : 'text'}
                     value={currentRowData[col.name] || ''}
                     placeholder={col.default || 'null'}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-4 px-6 text-sm font-bold text-slate-800 outline-none focus:ring-4 focus:ring-indigo-500/10"
+                    className={`w-full bg-slate-50 border border-slate-200 rounded-2xl py-4 px-6 text-sm font-bold text-slate-800 outline-none focus:ring-4 focus:ring-indigo-500/10 ${isEditingRow && col.isPrimaryKey ? 'opacity-50 cursor-not-allowed' : ''}`}
                     onChange={(e) => setCurrentRowData({ ...currentRowData, [col.name]: e.target.value })}
+                    readOnly={isEditingRow && col.isPrimaryKey}
                   />
                 </div>
               ))}
             </div>
             <div className="flex gap-6 mt-12 pt-8 border-t border-slate-100">
                <button onClick={() => setShowRowModal(false)} className="flex-1 py-5 text-slate-400 font-black uppercase tracking-widest text-xs">Cancel</button>
-               <button onClick={handleRowAction} className="flex-[2] py-5 bg-indigo-600 text-white font-black rounded-2xl uppercase tracking-widest text-xs shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all">SAVE RECORD</button>
+               <button onClick={handleRowAction} className="flex-[2] py-5 bg-indigo-600 text-white font-black rounded-2xl uppercase tracking-widest text-xs shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all">
+                 {isEditingRow ? 'UPDATE RECORD' : 'SAVE RECORD'}
+               </button>
             </div>
           </div>
         </div>
       )}
 
+      {/* Import Modal */}
       {showImportModal && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-2xl z-[100] flex items-center justify-center p-8">
           <div className="bg-white rounded-[4rem] w-full max-w-2xl p-16 shadow-2xl border border-slate-100 animate-in zoom-in-95 text-center">
@@ -574,6 +612,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         </div>
       )}
 
+      {/* Delete/Purge Modal */}
       {deleteConfirm.active && (
         <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-xl z-[300] flex items-center justify-center p-8">
           <div className="bg-white rounded-[3.5rem] w-full max-w-lg p-12 text-center shadow-2xl border border-rose-100 animate-in zoom-in-95">
@@ -612,6 +651,7 @@ const DatabaseExplorer: React.FC<{ projectId: string }> = ({ projectId }) => {
         </div>
       )}
 
+      {/* Rename Modal */}
       {renameState.active && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[300] flex items-center justify-center p-8">
           <div className="bg-white rounded-[3rem] w-full max-w-md p-10 animate-in zoom-in-95 shadow-2xl">
