@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
@@ -79,6 +78,8 @@ app.post('/projects', authenticateAdmin, async (req, res) => {
     const url = new URL(process.env.SYSTEM_DATABASE_URL!);
     url.pathname = `/${dbName}`;
     const tempPool = new Pool({ connectionString: url.toString() });
+    
+    // Provisionamento inicial: Esquemas, Roles e Tabelas de Auth
     await tempPool.query(`
       CREATE SCHEMA IF NOT EXISTS auth;
       CREATE TABLE IF NOT EXISTS auth.users (
@@ -88,6 +89,22 @@ app.post('/projects', authenticateAdmin, async (req, res) => {
         created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
       );
       CREATE SCHEMA IF NOT EXISTS public;
+      
+      -- Criar roles padrão se não existirem (usando DO block para evitar erros)
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'authenticated') THEN
+          CREATE ROLE authenticated NOLOGIN;
+        END IF;
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'anon') THEN
+          CREATE ROLE anon NOLOGIN;
+        END IF;
+      END
+      $$;
+
+      GRANT USAGE ON SCHEMA public, auth TO authenticated, anon;
+      GRANT SELECT ON ALL TABLES IN SCHEMA public TO authenticated, anon;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO authenticated, anon;
     `);
     await tempPool.end();
 
@@ -128,26 +145,13 @@ app.get('/:slug/tables', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
   try {
-    const tablesResult = await pool.query(`
-      SELECT table_name as name 
-      FROM information_schema.tables 
+    const result = await pool.query(`
+      SELECT table_name as name FROM information_schema.tables 
       WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
       ORDER BY table_name
     `);
-    
-    const tablesWithCount = await Promise.all(tablesResult.rows.map(async (row) => {
-      try {
-        const countRes = await pool.query(`SELECT count(*) FROM public."${row.name}"`);
-        return { ...row, count: parseInt(countRes.rows[0].count) };
-      } catch {
-        return { ...row, count: 0 };
-      }
-    }));
-    
-    res.json(tablesWithCount);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json(result.rows);
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/:slug/query', authenticateAdmin, async (req, res) => {
@@ -155,146 +159,45 @@ app.post('/:slug/query', authenticateAdmin, async (req, res) => {
   if (!pool) return res.status(404).json({ error: 'Project not found' });
   const { sql } = req.body;
   try {
-    const startTime = Date.now();
     const result = await pool.query(sql);
-    const duration = Date.now() - startTime;
-    res.json({ ...result, duration });
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.put('/:slug/tables/:table/rename', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const { newName } = req.body;
-  try {
-    const sanitizedName = newName.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-    await pool.query(`ALTER TABLE public."${req.params.table}" RENAME TO "${sanitizedName}"`);
-    res.json({ success: true, newName: sanitizedName });
+    res.json(result);
   } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
-app.delete('/:slug/tables/:table', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  try {
-    await pool.query(`DROP TABLE public."${req.params.table}"`);
-    res.json({ success: true });
-  } catch (err: any) { res.status(400).json({ error: err.message }); }
-});
-
-app.get('/:slug/tables/:table/sql', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  try {
-    const colsResult = await pool.query(`
-      SELECT column_name, data_type, is_nullable, column_default
-      FROM information_schema.columns 
-      WHERE table_name = $1 AND table_schema = 'public'
-    `, [req.params.table]);
-    const pksResult = await pool.query(`
-      SELECT kcu.column_name
-      FROM information_schema.table_constraints tc
-      JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
-      WHERE tc.table_name = $1 AND tc.constraint_type = 'PRIMARY KEY'
-    `, [req.params.table]);
-    const pks = pksResult.rows.map(r => r.column_name);
-    const cols = colsResult.rows.map(c => `  "${c.column_name}" ${c.data_type}${pks.includes(c.column_name) ? ' PRIMARY KEY' : ''}${c.is_nullable === 'NO' ? ' NOT NULL' : ''}${c.column_default ? ' DEFAULT ' + c.column_default : ''}`).join(',\n');
-    res.json({ sql: `CREATE TABLE public."${req.params.table}" (\n${cols}\n);` });
-  } catch (err: any) { res.status(400).json({ error: err.message }); }
-});
-
-app.get('/:slug/tables/:table/data', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  try {
-    const result = await pool.query(`SELECT * FROM public."${req.params.table}" LIMIT 1000`);
-    res.json(result.rows);
-  } catch (err: any) { res.status(400).json({ error: err.message }); }
-});
-
-app.post('/:slug/tables/:table/rows', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const { data } = req.body;
-  const filteredData = Object.fromEntries(Object.entries(data).filter(([_, v]) => v !== null && v !== ''));
-  const keys = Object.keys(filteredData).map(k => `"${k}"`).join(', ');
-  const values = Object.values(filteredData);
-  const placeholders = values.map((_, i) => `$${i + 1}`).join(', ');
-  try {
-    if (keys.length > 0) {
-      await pool.query(`INSERT INTO public."${req.params.table}" (${keys}) VALUES (${placeholders})`, values);
-    } else {
-      await pool.query(`INSERT INTO public."${req.params.table}" DEFAULT VALUES`);
-    }
-    res.json({ success: true });
-  } catch (err: any) { 
-    res.status(400).json({ error: err.message }); 
-  }
-});
-
-app.put('/:slug/tables/:table/rows', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const { data, pkColumn, pkValue } = req.body;
-  
-  const updateData = { ...data };
-  delete updateData[pkColumn]; // Não atualizar a própria PK
-  
-  const entries = Object.entries(updateData);
-  const setClause = entries.map(([k], i) => `"${k}" = $${i + 1}`).join(', ');
-  const values = entries.map(([_, v]) => v);
-  values.push(pkValue);
-  
-  try {
-    await pool.query(`UPDATE public."${req.params.table}" SET ${setClause} WHERE "${pkColumn}" = $${values.length}`, values);
-    res.json({ success: true });
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.post('/:slug/tables/:table/delete-rows', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const { ids, pkColumn } = req.body;
-  try {
-    await pool.query(`DELETE FROM public."${req.params.table}" WHERE "${pkColumn}" = ANY($1)`, [ids]);
-    res.json({ success: true });
-  } catch (err: any) { res.status(400).json({ error: err.message }); }
-});
-
-app.post('/:slug/tables', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const { name, columns } = req.body;
-  const colSql = columns.map((c: any) => `"${c.name}" ${c.type} ${c.primaryKey ? 'PRIMARY KEY' : ''} ${c.nullable ? '' : 'NOT NULL'} ${c.default ? 'DEFAULT ' + c.default : ''}`).join(', ');
-  try {
-    await pool.query(`CREATE TABLE public."${name}" (${colSql})`);
-    res.status(201).json({ success: true });
-  } catch (err: any) { res.status(400).json({ error: err.message }); }
-});
-
-app.get('/:slug/tables/:table/columns', authenticateAdmin, async (req, res) => {
+// RLS POLICIES
+app.get('/:slug/policies', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
   try {
     const result = await pool.query(`
-      SELECT column_name as name, data_type as type, is_nullable as nullable, column_default as default,
-      EXISTS (
-          SELECT 1 FROM information_schema.table_constraints tc 
-          JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name 
-          WHERE tc.table_name = $1 AND tc.constraint_type = 'PRIMARY KEY' AND kcu.column_name = columns.column_name
-      ) as "isPrimaryKey"
-      FROM information_schema.columns 
-      WHERE table_name = $1 AND table_schema = 'public'
-      ORDER BY ordinal_position
-    `, [req.params.table]);
+      SELECT schemaname, tablename, policyname, roles, cmd, qual, with_check 
+      FROM pg_policies WHERE schemaname = 'public'
+    `);
     res.json(result.rows);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
-  }
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/:slug/policies', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  const { name, table, command, role, using, withCheck } = req.body;
+  try {
+    await pool.query(`ALTER TABLE public."${table}" ENABLE ROW LEVEL SECURITY`);
+    let sql = `CREATE POLICY "${name}" ON public."${table}" FOR ${command} TO ${role}`;
+    if (using) sql += ` USING (${using})`;
+    if (withCheck) sql += ` WITH CHECK (${withCheck})`;
+    await pool.query(sql);
+    res.status(201).json({ success: true });
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+app.delete('/:slug/policies/:table/:name', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  try {
+    await pool.query(`DROP POLICY "${req.params.name}" ON public."${req.params.table}"`);
+    res.json({ success: true });
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
 app.listen(PORT, () => console.log(`[CASCATA ENGINE] High-Performance Studio Backend on ${PORT}`));
