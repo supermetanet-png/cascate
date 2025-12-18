@@ -16,10 +16,17 @@ http {
     sendfile        on;
     keepalive_timeout  65;
 
-    # Se o SSL não existir, o Nginx não deve recusar a porta 80.
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+
     server {
         listen 80;
         server_name _;
+
+        # Let's Encrypt Challenge
+        location /.well-known/acme-challenge/ {
+            root /var/www/certbot;
+        }
 
         # Frontend Proxy
         location / {
@@ -49,7 +56,7 @@ http {
         }
     }
 
-    # SSL Config (Apenas ative se tiver os arquivos no volume)
+    # SSL Config (Initially commented to avoid crash if files are missing)
     # server {
     #     listen 443 ssl;
     #     server_name _;
