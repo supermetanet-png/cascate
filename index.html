@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cascata | Management Studio</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -17,6 +18,9 @@
         ::-webkit-scrollbar-track { background: #f1f1f1; }
         ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #bbb; }
+        .grid-container { display: grid; }
+        .resize-handle { width: 4px; cursor: col-resize; position: absolute; right: 0; top: 0; bottom: 0; z-index: 10; }
+        .resize-handle:hover { background: #4f46e5; }
     </style>
 <script type="importmap">
 {
@@ -40,7 +44,6 @@
 </head>
 <body class="bg-slate-50 text-slate-900 overflow-x-hidden">
     <div id="root"></div>
-    <!-- Ponto de entrada crucial para o Vite carregar o React -->
     <script type="module" src="/index.tsx"></script>
 </body>
 </html>

@@ -10,7 +10,7 @@ dotenv.config();
 
 const app = express();
 app.use(cors() as any);
-app.use(express.json() as any);
+app.use(express.json({ limit: '50mb' }) as any);
 
 const { Pool } = pg;
 const systemPool = new Pool({
@@ -49,7 +49,7 @@ const authenticateAdmin = (req: any, res: any, next: any) => {
   }
 };
 
-// --- CONTROL PLANE (SYSTEM) ---
+// --- CONTROL PLANE ---
 
 app.post('/auth/login', async (req, res) => {
   const { email, password } = req.body;
@@ -104,8 +104,6 @@ app.post('/projects', authenticateAdmin, async (req, res) => {
   }
 });
 
-// --- UI PERSISTENCE ---
-
 app.get('/:slug/ui-settings/:table', authenticateAdmin, async (req, res) => {
   const result = await systemPool.query(
     'SELECT settings FROM system.ui_settings WHERE project_slug = $1 AND table_name = $2',
@@ -126,11 +124,11 @@ app.post('/:slug/ui-settings/:table', authenticateAdmin, async (req, res) => {
   res.json({ success: true });
 });
 
-// --- DATA PLANE (PER PROJECT) ---
+// --- DATA PLANE ---
 
 app.get('/:slug/stats', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project Instance not found' });
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
   try {
     const [t, u, s] = await Promise.all([
       pool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"),
@@ -145,9 +143,10 @@ app.get('/:slug/stats', authenticateAdmin, async (req, res) => {
 
 app.get('/:slug/tables', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project Instance not found' });
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
   const result = await pool.query(`
-    SELECT table_name as name, table_schema as schema 
+    SELECT table_name as name, 
+    (SELECT count(*) FROM public." " || table_name) as count
     FROM information_schema.tables 
     WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
     ORDER BY table_name
@@ -155,35 +154,93 @@ app.get('/:slug/tables', authenticateAdmin, async (req, res) => {
   res.json(result.rows);
 });
 
-// CORREÇÃO: Endpoint de dados que estava faltando
+// Rename Table
+app.put('/:slug/tables/:table/rename', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  const { newName } = req.body;
+  try {
+    await pool.query(`ALTER TABLE public."${req.params.table}" RENAME TO "${newName}"`);
+    res.json({ success: true });
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+// Delete Table
+app.delete('/:slug/tables/:table', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  try {
+    await pool.query(`DROP TABLE public."${req.params.table}"`);
+    res.json({ success: true });
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+// Get Table SQL (DDL)
+app.get('/:slug/tables/:table/sql', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  try {
+    const colsResult = await pool.query(`
+      SELECT column_name, data_type, is_nullable, column_default
+      FROM information_schema.columns 
+      WHERE table_name = $1 AND table_schema = 'public'
+    `, [req.params.table]);
+    const pksResult = await pool.query(`
+      SELECT kcu.column_name
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
+      WHERE tc.table_name = $1 AND tc.constraint_type = 'PRIMARY KEY'
+    `, [req.params.table]);
+    const pks = pksResult.rows.map(r => r.column_name);
+    const cols = colsResult.rows.map(c => `  "${c.column_name}" ${c.data_type}${pks.includes(c.column_name) ? ' PRIMARY KEY' : ''}${c.is_nullable === 'NO' ? ' NOT NULL' : ''}${c.column_default ? ' DEFAULT ' + c.column_default : ''}`).join(',\n');
+    res.json({ sql: `CREATE TABLE public."${req.params.table}" (\n${cols}\n);` });
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
 app.get('/:slug/tables/:table/data', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
   try {
-    const result = await pool.query(`SELECT * FROM public."${req.params.table}" LIMIT 500`);
+    const result = await pool.query(`SELECT * FROM public."${req.params.table}" LIMIT 1000`);
     res.json(result.rows);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
-  }
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+// Inserção manual de linha
+app.post('/:slug/tables/:table/rows', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  const { data } = req.body;
+  const keys = Object.keys(data).map(k => `"${k}"`).join(', ');
+  const values = Object.values(data);
+  const placeholders = values.map((_, i) => `$${i + 1}`).join(', ');
+  try {
+    await pool.query(`INSERT INTO public."${req.params.table}" (${keys}) VALUES (${placeholders})`, values);
+    res.json({ success: true });
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+// Deleção em massa
+app.post('/:slug/tables/:table/delete-rows', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  const { ids, pkColumn } = req.body;
+  try {
+    await pool.query(`DELETE FROM public."${req.params.table}" WHERE "${pkColumn}" = ANY($1)`, [ids]);
+    res.json({ success: true });
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
 app.post('/:slug/query', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project Instance not found' });
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
   try {
     const { sql } = req.body;
     const startTime = Date.now();
     const result = await pool.query(sql);
     const duration = Date.now() - startTime;
-    res.json({ 
-      rows: result.rows, 
-      rowCount: result.rowCount, 
-      command: result.command, 
-      duration: `${duration}ms` 
-    });
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
-  }
+    res.json({ rows: result.rows, rowCount: result.rowCount, command: result.command, duration: `${duration}ms` });
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
 app.post('/:slug/tables', authenticateAdmin, async (req, res) => {
@@ -194,16 +251,19 @@ app.post('/:slug/tables', authenticateAdmin, async (req, res) => {
   try {
     await pool.query(`CREATE TABLE public."${name}" (${colSql})`);
     res.status(201).json({ success: true });
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
-  }
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
 app.get('/:slug/tables/:table/columns', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
   const result = await pool.query(`
-    SELECT column_name as name, data_type as type, is_nullable as nullable, column_default as default
+    SELECT column_name as name, data_type as type, is_nullable as nullable, column_default as default,
+    EXISTS (
+        SELECT 1 FROM information_schema.table_constraints tc 
+        JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name 
+        WHERE tc.table_name = $1 AND tc.constraint_type = 'PRIMARY KEY' AND kcu.column_name = columns.column_name
+    ) as "isPrimaryKey"
     FROM information_schema.columns 
     WHERE table_name = $1 AND table_schema = 'public'
     ORDER BY ordinal_position
@@ -226,9 +286,7 @@ app.post('/:slug/auth/users', authenticateAdmin, async (req, res) => {
   try {
     await pool.query('INSERT INTO auth.users (email, password_hash) VALUES ($1, $2)', [email, hash]);
     res.status(201).json({ success: true });
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
-  }
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
 app.get('/:slug/policies', authenticateAdmin, async (req, res) => {
@@ -249,9 +307,7 @@ app.post('/:slug/policies', authenticateAdmin, async (req, res) => {
     await pool.query(`ALTER TABLE public."${table}" ENABLE ROW LEVEL SECURITY`);
     await pool.query(`CREATE POLICY "${name}" ON public."${table}" FOR ${command} USING (${check})`);
     res.status(201).json({ success: true });
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
-  }
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
 app.listen(PORT, () => console.log(`[CASCATA ENGINE] High-Performance Studio Backend on ${PORT}`));
