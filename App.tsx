@@ -1,7 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
 import { 
-  Layout, 
   Database, 
   Settings, 
   Shield, 
@@ -14,7 +13,9 @@ import {
   Search,
   Terminal,
   Server,
-  Key
+  Key,
+  Bell,
+  Command
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import ProjectDetail from './pages/ProjectDetail';
@@ -23,17 +24,16 @@ import AuthConfig from './pages/AuthConfig';
 import RLSManager from './pages/RLSManager';
 import RPCManager from './pages/RPCManager';
 
-// Simple Hash Router for the environment
 const App: React.FC = () => {
   const [currentHash, setCurrentHash] = useState(window.location.hash || '#/projects');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
   useEffect(() => {
     const handleHashChange = () => {
-      setCurrentHash(window.location.hash || '#/projects');
+      const hash = window.location.hash || '#/projects';
+      setCurrentHash(hash);
       
-      // Parse project ID if present
-      const parts = window.location.hash.split('/');
+      const parts = hash.split('/');
       if (parts[1] === 'project' && parts[2]) {
         setSelectedProjectId(parts[2]);
       } else {
@@ -41,6 +41,7 @@ const App: React.FC = () => {
       }
     };
     window.addEventListener('hashchange', handleHashChange);
+    handleHashChange();
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
@@ -49,11 +50,10 @@ const App: React.FC = () => {
   };
 
   const renderContent = () => {
-    const hash = currentHash;
-    if (hash === '#/projects' || hash === '') return <Dashboard onSelectProject={(id) => navigate(`#/project/${id}`)} />;
+    if (currentHash === '#/projects' || currentHash === '') return <Dashboard onSelectProject={(id) => navigate(`#/project/${id}`)} />;
     
-    if (hash.startsWith('#/project/')) {
-      const parts = hash.split('/');
+    if (currentHash.startsWith('#/project/')) {
+      const parts = currentHash.split('/');
       const section = parts[3] || 'overview';
       const projectId = parts[2];
 
@@ -71,28 +71,34 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="flex h-screen bg-white">
+    <div className="flex h-screen bg-[#F8FAFC]">
       {/* Sidebar */}
-      <aside className="w-64 border-r border-slate-200 flex flex-col bg-slate-50/50">
-        <div className="p-6 flex items-center gap-3 border-b border-slate-100 bg-white">
-          <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
+      <aside className="w-[260px] border-r border-slate-200 flex flex-col bg-white shadow-sm z-20">
+        <div className="p-5 flex items-center gap-3 border-b border-slate-100">
+          <div className="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-200">
             <Layers className="text-white w-5 h-5" />
           </div>
-          <span className="font-bold text-xl tracking-tight text-slate-800">Cascata</span>
+          <div>
+            <span className="font-bold text-lg tracking-tight text-slate-900 block leading-none">Cascata</span>
+            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1 block">Studio v1.0</span>
+          </div>
         </div>
 
         <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-3">Main</div>
+          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-3 px-3">Main Console</div>
           <SidebarItem 
             icon={<Server size={18} />} 
-            label="Projects" 
+            label="All Projects" 
             active={currentHash === '#/projects'} 
             onClick={() => navigate('#/projects')} 
           />
           
           {selectedProjectId && (
             <>
-              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mt-8 mb-2 px-3">Project Management</div>
+              <div className="mt-8 mb-3 px-3 flex items-center justify-between">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">Instance</div>
+                <span className="text-[10px] font-mono text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded uppercase">Active</span>
+              </div>
               <SidebarItem 
                 icon={<Activity size={18} />} 
                 label="Overview" 
@@ -101,31 +107,31 @@ const App: React.FC = () => {
               />
               <SidebarItem 
                 icon={<Database size={18} />} 
-                label="Tables" 
+                label="Data Browser" 
                 active={currentHash.includes('/database')} 
                 onClick={() => navigate(`#/project/${selectedProjectId}/database`)} 
               />
               <SidebarItem 
                 icon={<Shield size={18} />} 
-                label="Policies (RLS)" 
+                label="Access Control" 
                 active={currentHash.includes('/rls')} 
                 onClick={() => navigate(`#/project/${selectedProjectId}/rls`)} 
               />
               <SidebarItem 
                 icon={<Code2 size={18} />} 
-                label="Functions (RPC)" 
+                label="Edge Functions" 
                 active={currentHash.includes('/rpc')} 
                 onClick={() => navigate(`#/project/${selectedProjectId}/rpc`)} 
               />
               <SidebarItem 
                 icon={<Users size={18} />} 
-                label="Authentication" 
+                label="Auth Services" 
                 active={currentHash.includes('/auth')} 
                 onClick={() => navigate(`#/project/${selectedProjectId}/auth`)} 
               />
               <SidebarItem 
                 icon={<Settings size={18} />} 
-                label="Settings" 
+                label="Project Config" 
                 active={false} 
                 onClick={() => {}} 
               />
@@ -133,21 +139,38 @@ const App: React.FC = () => {
           )}
         </nav>
 
-        <div className="p-4 border-t border-slate-200 bg-white">
-          <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-50">
-            <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-xs font-bold">AD</div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-slate-900 truncate">Admin User</p>
-              <p className="text-xs text-slate-500 truncate">Control Plane</p>
+        <div className="p-4 border-t border-slate-100">
+          <button className="w-full flex items-center justify-between px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-500 hover:text-slate-900 transition-all mb-4 group">
+            <div className="flex items-center gap-2 text-xs font-medium">
+              <Command size={14} />
+              <span>Quick Actions</span>
             </div>
-            <LogOutButton />
+            <span className="text-[10px] bg-white border border-slate-200 px-1 rounded text-slate-400 group-hover:border-slate-300">⌘K</span>
+          </button>
+          <div className="flex items-center gap-3 px-2 py-1">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center text-xs font-bold text-white shadow-md">AD</div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-slate-900 truncate">Admin</p>
+              <p className="text-[10px] text-slate-400 truncate">Root Administrator</p>
+            </div>
           </div>
         </div>
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto bg-white flex flex-col">
-        {renderContent()}
+      <main className="flex-1 overflow-y-auto flex flex-col relative">
+        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-end px-8 gap-4 sticky top-0 z-10 shadow-sm/5">
+          <button className="text-slate-400 hover:text-slate-600 transition-colors p-2">
+            <Bell size={18} />
+          </button>
+          <div className="h-6 w-[1px] bg-slate-200 mx-2"></div>
+          <button className="bg-slate-900 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-slate-800 transition-all flex items-center gap-2">
+            <Plus size={14} /> NEW PROJECT
+          </button>
+        </header>
+        <div className="flex-1">
+          {renderContent()}
+        </div>
       </main>
     </div>
   );
@@ -156,20 +179,14 @@ const App: React.FC = () => {
 const SidebarItem: React.FC<{ icon: React.ReactNode, label: string, active: boolean, onClick: () => void }> = ({ icon, label, active, onClick }) => (
   <button 
     onClick={onClick}
-    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200 ${
+    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition-all duration-200 ${
       active 
-        ? 'bg-indigo-50 text-indigo-700 font-medium shadow-sm ring-1 ring-indigo-200' 
-        : 'text-slate-600 hover:bg-slate-100'
+        ? 'bg-indigo-600 text-white font-semibold shadow-lg shadow-indigo-100' 
+        : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
     }`}
   >
-    <span className={active ? 'text-indigo-600' : 'text-slate-400'}>{icon}</span>
+    <span className={active ? 'text-white' : 'text-slate-400 group-hover:text-slate-600'}>{icon}</span>
     {label}
-  </button>
-);
-
-const LogOutButton = () => (
-  <button className="text-slate-400 hover:text-red-500 transition-colors">
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
   </button>
 );
 

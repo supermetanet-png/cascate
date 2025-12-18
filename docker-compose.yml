@@ -8,50 +8,54 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/nginx.conf.txt:/etc/nginx/nginx.conf:ro
     depends_on:
       - backend_control
       - backend_data
       - frontend
+    restart: always
 
   backend_control:
     build: 
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile.txt
     environment:
       - SERVICE_MODE=CONTROL_PLANE
       - SYSTEM_DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@db:5432/${DB_NAME}
       - SYSTEM_JWT_SECRET=${SYSTEM_JWT_SECRET}
+      - PORT=3000
     depends_on:
       - db
+    restart: always
 
   backend_data:
     build: 
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile.txt
     environment:
       - SERVICE_MODE=DATA_PLANE
       - SYSTEM_DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@db:5432/${DB_NAME}
+      - PORT=3000
     depends_on:
       - db
+    restart: always
 
   frontend:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    ports:
-      - "3001:80"
+      context: .
+      dockerfile: frontend/Dockerfile.txt
+    restart: always
 
   db:
     image: postgres:15-alpine
     restart: always
     environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASS}
-      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER:-cascata_admin}
+      POSTGRES_PASSWORD: ${DB_PASS:-secure_pass}
+      POSTGRES_DB: ${DB_NAME:-cascata_system}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./database/init.sql.txt:/docker-entrypoint-initdb.d/init.sql
 
 volumes:
   pgdata:
