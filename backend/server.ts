@@ -155,8 +155,6 @@ app.put('/:slug/tables/:table/rename', authenticateAdmin, async (req, res) => {
   if (!pool) return res.status(404).json({ error: 'Project not found' });
   const { newName } = req.body;
   try {
-    // Validar se nome é seguro (alfanumérico e underscore)
-    if (!/^[a-z0-9_]+$/i.test(newName)) throw new Error("Invalid table name. Use lowercase, numbers and underscores.");
     await pool.query(`ALTER TABLE public."${req.params.table}" RENAME TO "${newName}"`);
     res.json({ success: true });
   } catch (err: any) { res.status(400).json({ error: err.message }); }
@@ -205,6 +203,7 @@ app.post('/:slug/tables/:table/rows', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
   const { data } = req.body;
+  // Filtrar apenas o que tem valor definido para permitir que o Postgres use DEFAULT
   const filteredData = Object.fromEntries(Object.entries(data).filter(([_, v]) => v !== null && v !== ''));
   const keys = Object.keys(filteredData).map(k => `"${k}"`).join(', ');
   const values = Object.values(filteredData);
