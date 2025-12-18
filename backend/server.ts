@@ -141,20 +141,34 @@ app.get('/:slug/stats', authenticateAdmin, async (req, res) => {
   }
 });
 
+// CORREÇÃO: Endpoint de tabelas corrigido para evitar o 502
 app.get('/:slug/tables', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const result = await pool.query(`
-    SELECT table_name as name, 
-    (SELECT count(*) FROM public." " || table_name) as count
-    FROM information_schema.tables 
-    WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-    ORDER BY table_name
-  `);
-  res.json(result.rows);
+  try {
+    const tablesResult = await pool.query(`
+      SELECT table_name as name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+      ORDER BY table_name
+    `);
+    
+    // Buscar contagem de forma segura para cada tabela
+    const tablesWithCount = await Promise.all(tablesResult.rows.map(async (row) => {
+      try {
+        const countRes = await pool.query(`SELECT count(*) FROM public."${row.name}"`);
+        return { ...row, count: parseInt(countRes.rows[0].count) };
+      } catch {
+        return { ...row, count: 0 };
+      }
+    }));
+    
+    res.json(tablesWithCount);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// Rename Table
 app.put('/:slug/tables/:table/rename', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
@@ -165,7 +179,6 @@ app.put('/:slug/tables/:table/rename', authenticateAdmin, async (req, res) => {
   } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
-// Delete Table
 app.delete('/:slug/tables/:table', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
@@ -175,7 +188,6 @@ app.delete('/:slug/tables/:table', authenticateAdmin, async (req, res) => {
   } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
-// Get Table SQL (DDL)
 app.get('/:slug/tables/:table/sql', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
@@ -206,13 +218,13 @@ app.get('/:slug/tables/:table/data', authenticateAdmin, async (req, res) => {
   } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
-// Inserção manual de linha
 app.post('/:slug/tables/:table/rows', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
   const { data } = req.body;
-  const keys = Object.keys(data).map(k => `"${k}"`).join(', ');
-  const values = Object.values(data);
+  const filteredData = Object.fromEntries(Object.entries(data).filter(([_, v]) => v !== null && v !== ''));
+  const keys = Object.keys(filteredData).map(k => `"${k}"`).join(', ');
+  const values = Object.values(filteredData);
   const placeholders = values.map((_, i) => `$${i + 1}`).join(', ');
   try {
     await pool.query(`INSERT INTO public."${req.params.table}" (${keys}) VALUES (${placeholders})`, values);
@@ -220,7 +232,6 @@ app.post('/:slug/tables/:table/rows', authenticateAdmin, async (req, res) => {
   } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
-// Deleção em massa
 app.post('/:slug/tables/:table/delete-rows', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
