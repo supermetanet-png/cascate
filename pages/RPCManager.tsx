@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Code2, 
@@ -56,6 +57,7 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [loading, setLoading] = useState(true);
   const [executing, setExecuting] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState<ProjectAsset | null>(null);
+  const [projectData, setProjectData] = useState<any>(null);
   
   // Editor State
   const [editorSql, setEditorSql] = useState('-- Writing high-performance SQL...');
@@ -88,13 +90,15 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [assetsData, functionsData, triggersData] = await Promise.all([
+      const [assetsData, functionsData, triggersData, projects] = await Promise.all([
         fetchWithAuth(`/api/data/${projectId}/assets`),
         fetchWithAuth(`/api/data/${projectId}/functions`),
-        fetchWithAuth(`/api/data/${projectId}/triggers`)
+        fetchWithAuth(`/api/data/${projectId}/triggers`),
+        fetchWithAuth(`/api/control/projects`)
       ]);
       setAssets(assetsData);
       setDbObjects([...functionsData.map((f:any) => ({...f, type: 'rpc'})), ...triggersData.map((t:any) => ({...t, type: 'trigger'}))]);
+      setProjectData(projects.find((p: any) => p.slug === projectId));
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -109,7 +113,6 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
     return () => window.removeEventListener('click', hide);
   }, [projectId]);
 
-  // Robust clipboard fallback for non-secure contexts (HTTP/IP)
   const safeCopyToClipboard = async (text: string) => {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -134,7 +137,6 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   };
 
   const extractObjectName = (sql: string): string | null => {
-    // Regex optimized to find names in CREATE FUNCTION, TRIGGER, VIEW, PROCEDURE
     const match = sql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|TRIGGER|VIEW|PROCEDURE)\s+(?:public\.)?(\w+)/i);
     return match ? match[1] : null;
   };
@@ -162,17 +164,12 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
     if (!selectedAsset) return;
     setExecuting(true);
     try {
-      // 1. Compile on Database
       await fetchWithAuth(`/api/data/${projectId}/query`, {
         method: 'POST',
         body: JSON.stringify({ sql: editorSql })
       });
-      
-      // 2. Intelligence: Auto-rename asset based on SQL definition
       const detectedName = extractObjectName(editorSql);
       const finalName = detectedName || selectedAsset.name;
-
-      // 3. Persist metadata and updated name (UPSERT logic in backend handles ID)
       const updated = await fetchWithAuth(`/api/data/${projectId}/assets`, {
         method: 'POST',
         body: JSON.stringify({ 
@@ -181,12 +178,11 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
           metadata: { ...selectedAsset.metadata, notes, sql: editorSql } 
         })
       });
-      
       setAssets(assets.map(a => a.id === updated.id ? updated : a));
       setSelectedAsset(updated);
       setSuccessMsg(`Compiled successfully as "${finalName}"`);
       setTimeout(() => setSuccessMsg(null), 2000);
-      fetchData(); // Sync discovery
+      fetchData();
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -228,19 +224,14 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
     setExecuting(true);
     try {
       let params = {};
-      try { params = JSON.parse(testParams); } catch(e) { /* ignore parse error */ }
-      
+      try { params = JSON.parse(testParams); } catch(e) { }
       const paramValues = Object.values(params);
-      
-      // If no params, do not pass anything to avoid "function(unknown) does not exist" errors
       const argsString = paramValues.length > 0 
         ? paramValues.map(v => typeof v === 'string' ? `'${v}'` : v).join(', ') 
         : '';
-        
       const sql = selectedAsset.type === 'rpc' 
-        ? `SELECT public.${selectedAsset.name}(${argsString})`
+        ? `SELECT * FROM public."${selectedAsset.name}"(${argsString})`
         : `-- Execution check for ${selectedAsset.type}`;
-        
       const result = await fetchWithAuth(`/api/data/${projectId}/query`, {
         method: 'POST',
         body: JSON.stringify({ sql })
@@ -254,9 +245,16 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   };
 
   const copyCurl = () => {
-    if (!selectedAsset) return;
-    const curl = `curl -X POST https://api.cascata.io/data/${projectId}/rpc/${selectedAsset.name} \\
+    if (!selectedAsset || !projectData) return;
+    
+    // Calcula o endpoint final baseado na configuração de domínio
+    const endpoint = projectData.custom_domain 
+      ? `https://${projectData.custom_domain}/rpc/${selectedAsset.name}`
+      : `${window.location.origin}/api/data/${projectId}/rpc/${selectedAsset.name}`;
+
+    const curl = `curl -X POST ${endpoint} \\
   -H "Content-Type: application/json" \\
+  -H "apikey: ${projectData.anon_key}" \\
   -d '${testParams}'`;
     safeCopyToClipboard(curl);
   };
@@ -341,7 +339,6 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
 
   return (
     <div className="flex h-full flex-col bg-[#FDFDFD] overflow-hidden relative">
-      {/* Asset Context Menu */}
       {contextMenu && (
         <div 
           className="fixed z-[500] bg-white border border-slate-200 shadow-2xl rounded-2xl p-2 w-56 animate-in fade-in zoom-in-95" 
@@ -364,7 +361,6 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
         </div>
       )}
 
-      {/* Rename Modal */}
       {renamingItem && (
         <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-[600] flex items-center justify-center p-6">
           <div className="bg-white rounded-3xl p-8 w-full max-w-sm shadow-2xl border border-slate-100">
@@ -384,7 +380,6 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
         </div>
       )}
 
-      {/* Notifications */}
       {(error || successMsg) && (
         <div className={`fixed top-8 left-1/2 -translate-x-1/2 z-[400] p-5 rounded-3xl shadow-2xl flex items-center gap-4 animate-in slide-in-from-top-4 ${error ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
           {error ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
@@ -393,7 +388,6 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
         </div>
       )}
 
-      {/* Header Context Switcher */}
       <header className="border-b border-slate-200 px-10 py-6 bg-white flex items-center justify-between shadow-sm z-10">
         <div className="flex items-center gap-4">
           <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-xl"><Cpu size={24} /></div>
@@ -411,7 +405,6 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Navigation Sidebar */}
         <aside className="w-80 border-r border-slate-200 bg-white flex flex-col shrink-0">
           <div className="p-6">
             <div className="relative group"><Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors" size={16} /><input placeholder="Search logic registry..." className="w-full pl-12 pr-4 py-3.5 text-sm bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all" /></div>
@@ -422,7 +415,6 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
           </div>
         </aside>
 
-        {/* Main Editor Surface */}
         <main className="flex-1 overflow-hidden flex flex-col bg-[#F8FAFC]">
           {selectedAsset ? (
             <div className="flex-1 flex flex-col">
@@ -438,7 +430,6 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
               </div>
 
               <div className="flex-1 flex overflow-hidden">
-                {/* Editor Column */}
                 <div className="flex-1 flex flex-col border-r border-slate-200 relative">
                   <div className="flex-1 flex relative">
                     <textarea 
@@ -447,7 +438,6 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
                       className="flex-1 bg-slate-950 text-emerald-400 p-12 font-mono text-base outline-none resize-none spellcheck-false" 
                     />
                     
-                    {/* Documentation Column (High Contrast Dark) */}
                     <div className="w-[200px] bg-[#020617] border-l border-white/5 flex flex-col p-6 shrink-0 shadow-inner">
                        <span className="text-[10px] font-black text-slate-200 uppercase tracking-[0.2em] mb-4 flex items-center gap-2 border-b border-white/10 pb-4"><BookOpen size={14} className="text-indigo-400" /> Notes</span>
                        <textarea 
@@ -462,7 +452,6 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
                     </div>
                   </div>
 
-                  {/* Tester Panel */}
                   <div className="h-96 border-t border-slate-200 bg-white p-10 flex gap-10 overflow-hidden shrink-0">
                     <div className="flex-1 flex flex-col gap-4">
                       <div className="flex items-center justify-between"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Layout size={14} className="text-indigo-600"/> Test Payload (JSON)</span></div>

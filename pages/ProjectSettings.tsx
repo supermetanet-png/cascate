@@ -2,7 +2,8 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Shield, Key, Globe, Lock, Save, Loader2, CheckCircle2, Copy, 
-  Terminal, Eye, EyeOff, RefreshCw, Code, BookOpen, AlertTriangle
+  Terminal, Eye, EyeOff, RefreshCw, Code, BookOpen, AlertTriangle,
+  Server, ExternalLink
 } from 'lucide-react';
 
 const ProjectSettings: React.FC<{ projectId: string }> = ({ projectId }) => {
@@ -10,6 +11,7 @@ const ProjectSettings: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [customDomain, setCustomDomain] = useState('');
   const [loading, setLoading] = useState(true);
   const [rotating, setRotating] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState<string | null>(null);
 
   const fetchProject = async () => {
@@ -25,6 +27,29 @@ const ProjectSettings: React.FC<{ projectId: string }> = ({ projectId }) => {
 
   useEffect(() => { fetchProject(); }, [projectId]);
 
+  const handleUpdateSettings = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/control/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('cascata_token')}`
+        },
+        body: JSON.stringify({ custom_domain: customDomain })
+      });
+      if (res.ok) {
+        setSuccess('Arquitetura de rede atualizada.');
+        fetchProject();
+        setTimeout(() => setSuccess(null), 3000);
+      }
+    } catch (e) {
+      alert('Erro ao salvar domínio.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const rotateKey = async (type: string) => {
     if (!confirm('Isso invalidará a chave atual imediatamente. Continuar?')) return;
     setRotating(type);
@@ -38,7 +63,7 @@ const ProjectSettings: React.FC<{ projectId: string }> = ({ projectId }) => {
         body: JSON.stringify({ type })
       });
       await fetchProject();
-      setSuccess(`${type.toUpperCase()} rotacionada com sucesso.`);
+      setSuccess(`${type.toUpperCase()} rotacionada.`);
       setTimeout(() => setSuccess(null), 3000);
     } catch (e) {
       alert('Falha ao rotacionar chave.');
@@ -49,11 +74,15 @@ const ProjectSettings: React.FC<{ projectId: string }> = ({ projectId }) => {
 
   if (loading) return <div className="p-20 flex justify-center"><Loader2 className="animate-spin text-indigo-600" /></div>;
 
+  const apiEndpoint = project?.custom_domain 
+    ? `https://${project.custom_domain}` 
+    : `${window.location.origin}/api/data/${project?.slug}`;
+
   const sdkCode = `
 import { createClient } from './lib/cascata-sdk';
 
 const cascata = createClient(
-  '${window.location.origin}/api/data/${project?.slug}',
+  '${apiEndpoint}',
   '${project?.anon_key}'
 );
 
@@ -71,6 +100,39 @@ const { data } = await cascata.from('users').select();
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+        {/* Infraestrutura e Domínio */}
+        <div className="bg-white border border-slate-200 rounded-[3.5rem] p-12 shadow-sm space-y-10">
+           <div className="flex items-center justify-between">
+              <h3 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-4">
+                <div className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center shadow-lg"><Globe size={20} /></div>
+                Exposição de API
+              </h3>
+              <button onClick={handleUpdateSettings} disabled={saving} className="bg-slate-900 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
+                {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Salvar Domínio
+              </button>
+           </div>
+           
+           <div className="space-y-6">
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Custom API Domain (FQDN)</label>
+                <input 
+                  value={customDomain} 
+                  onChange={(e) => setCustomDomain(e.target.value)} 
+                  placeholder="api.meu-app.com"
+                  className="w-full bg-slate-50 border border-slate-100 rounded-2xl py-4 px-6 text-sm font-bold text-slate-900 outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all" 
+                />
+                <p className="text-[10px] text-slate-400 font-medium px-2">Aponte o CNAME/A do seu domínio para <b>{window.location.hostname}</b> para ativar o isolamento.</p>
+              </div>
+
+              <div className="p-6 bg-slate-50 rounded-2xl border border-slate-100 space-y-4">
+                <div>
+                   <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Default Instance Endpoint</span>
+                   <code className="text-xs font-mono font-bold text-indigo-600 break-all">{window.location.origin}/api/data/{project?.slug}</code>
+                </div>
+              </div>
+           </div>
+        </div>
+
         {/* Segurança e Chaves */}
         <div className="bg-white border border-slate-200 rounded-[3.5rem] p-12 shadow-sm space-y-10">
            <h3 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-4">
@@ -102,7 +164,7 @@ const { data } = await cascata.from('users').select();
         </div>
 
         {/* Integração SDK Nativo */}
-        <div className="bg-slate-900 border border-slate-800 rounded-[3.5rem] p-12 shadow-sm space-y-8">
+        <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-[3.5rem] p-12 shadow-sm space-y-8">
            <div className="flex items-center justify-between">
               <h3 className="text-2xl font-black text-white tracking-tight flex items-center gap-4">
                 <div className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center"><Code size={20} /></div>
