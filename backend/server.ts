@@ -1,3 +1,4 @@
+
 import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
@@ -149,6 +150,20 @@ app.get('/:slug/tables', authenticateAdmin, async (req, res) => {
   }
 });
 
+app.post('/:slug/query', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  const { sql } = req.body;
+  try {
+    const startTime = Date.now();
+    const result = await pool.query(sql);
+    const duration = Date.now() - startTime;
+    res.json({ ...result, duration });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.put('/:slug/tables/:table/rename', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
@@ -199,18 +214,6 @@ app.get('/:slug/tables/:table/data', authenticateAdmin, async (req, res) => {
   } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
-app.post('/:slug/query', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const { sql } = req.body;
-  try {
-    const result = await pool.query(sql);
-    res.json(result);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
 app.post('/:slug/tables/:table/rows', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
@@ -236,14 +239,13 @@ app.put('/:slug/tables/:table/rows', authenticateAdmin, async (req, res) => {
   if (!pool) return res.status(404).json({ error: 'Project not found' });
   const { data, pkColumn, pkValue } = req.body;
   
-  // Removemos a PK do set de dados para não tentar atualizar a própria PK
   const updateData = { ...data };
-  delete updateData[pkColumn];
+  delete updateData[pkColumn]; // Não atualizar a própria PK
   
   const entries = Object.entries(updateData);
   const setClause = entries.map(([k], i) => `"${k}" = $${i + 1}`).join(', ');
   const values = entries.map(([_, v]) => v);
-  values.push(pkValue); // A PK será o último parâmetro
+  values.push(pkValue);
   
   try {
     await pool.query(`UPDATE public."${req.params.table}" SET ${setClause} WHERE "${pkColumn}" = $${values.length}`, values);
@@ -293,45 +295,6 @@ app.get('/:slug/tables/:table/columns', authenticateAdmin, async (req, res) => {
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
-});
-
-app.get('/:slug/auth/users', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const result = await pool.query('SELECT id, email, created_at FROM auth.users ORDER BY created_at DESC');
-  res.json(result.rows);
-});
-
-app.post('/:slug/auth/users', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const { email, password } = req.body;
-  const hash = await bcrypt.hash(password, 10);
-  try {
-    await pool.query('INSERT INTO auth.users (email, password_hash) VALUES ($1, $2)', [email, hash]);
-    res.status(201).json({ success: true });
-  } catch (err: any) { res.status(400).json({ error: err.message }); }
-});
-
-app.get('/:slug/policies', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const result = await pool.query(`
-    SELECT schemaname, tablename, policyname, permissive, roles, cmd, qual, with_check 
-    FROM pg_policies WHERE schemaname = 'public'
-  `);
-  res.json(result.rows);
-});
-
-app.post('/:slug/policies', authenticateAdmin, async (req, res) => {
-  const pool = await getProjectPool(req.params.slug);
-  if (!pool) return res.status(404).json({ error: 'Project not found' });
-  const { name, table, command, check } = req.body;
-  try {
-    await pool.query(`ALTER TABLE public."${table}" ENABLE ROW LEVEL SECURITY`);
-    await pool.query(`CREATE POLICY "${name}" ON public."${table}" FOR ${command} USING (${check})`);
-    res.status(201).json({ success: true });
-  } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
 app.listen(PORT, () => console.log(`[CASCATA ENGINE] High-Performance Studio Backend on ${PORT}`));
