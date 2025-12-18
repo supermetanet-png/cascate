@@ -16,7 +16,8 @@ import {
   Key,
   Bell,
   Command,
-  LogOut
+  LogOut,
+  Clock
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import ProjectDetail from './pages/ProjectDetail';
@@ -139,8 +140,8 @@ const App: React.FC = () => {
                 onClick={() => navigate(`#/project/${selectedProjectId}/rls`)} 
               />
               <SidebarItem 
-                icon={<Code2 size={18} />} 
-                label="Edge Functions" 
+                icon={<Clock size={18} />} 
+                label="RPC / Triggers / Cron" 
                 active={currentHash.includes('/rpc')} 
                 onClick={() => navigate(`#/project/${selectedProjectId}/rpc`)} 
               />

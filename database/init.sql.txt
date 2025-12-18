@@ -28,6 +28,17 @@ CREATE TABLE system.ui_settings (
     UNIQUE(project_slug, table_name)
 );
 
+-- Tabela de Ativos Virtuais (Pastas e Arquivos de RPC/Triggers/Cron)
+CREATE TABLE system.project_assets (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_slug TEXT NOT NULL,
+    parent_id UUID REFERENCES system.project_assets(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL, -- 'folder', 'rpc', 'trigger', 'cron'
+    metadata JSONB DEFAULT '{}', -- { notes: '', db_object_name: '' }
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Tabela de Administradores
 CREATE TABLE system.admin_users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

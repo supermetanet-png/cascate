@@ -1,3 +1,4 @@
+
 import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
@@ -140,9 +141,29 @@ app.post('/:slug/ui-settings/:table', authenticateAdmin, async (req, res) => {
   res.json({ success: true });
 });
 
+// --- VIRTUAL FOLDERS / ASSETS ---
+app.get('/:slug/assets', authenticateAdmin, async (req, res) => {
+  const result = await systemPool.query('SELECT * FROM system.project_assets WHERE project_slug = $1 ORDER BY created_at ASC', [req.params.slug]);
+  res.json(result.rows);
+});
+
+app.post('/:slug/assets', authenticateAdmin, async (req, res) => {
+  const { name, type, parent_id, metadata } = req.body;
+  const result = await systemPool.query(
+    'INSERT INTO system.project_assets (project_slug, name, type, parent_id, metadata) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+    [req.params.slug, name, type, parent_id, JSON.stringify(metadata || {})]
+  );
+  res.json(result.rows[0]);
+});
+
+app.delete('/:slug/assets/:id', authenticateAdmin, async (req, res) => {
+  await systemPool.query('DELETE FROM system.project_assets WHERE id = $1 AND project_slug = $2', [req.params.id, req.params.slug]);
+  res.json({ success: true });
+});
+
 // --- DATA PLANE ---
 
-// PROJET STATS ENDPOINT
+// PROJECT STATS ENDPOINT
 app.get('/:slug/stats', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
@@ -156,7 +177,6 @@ app.get('/:slug/stats', authenticateAdmin, async (req, res) => {
       size: dbSize.rows[0].pg_size_pretty
     });
   } catch (err: any) {
-    // If auth.users doesn't exist yet or other schema error
     res.json({ tables: 0, users: 0, size: '0 MB' });
   }
 });
@@ -185,6 +205,44 @@ app.get('/:slug/tables', authenticateAdmin, async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// FUNCTIONS DISCOVERY
+app.get('/:slug/functions', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  try {
+    const result = await pool.query(`
+      SELECT 
+        p.proname as name, 
+        pg_get_function_arguments(p.oid) as args,
+        pg_get_function_result(p.oid) as return_type,
+        pg_get_functiondef(p.oid) as definition
+      FROM pg_proc p 
+      JOIN pg_namespace n ON p.pronamespace = n.oid 
+      WHERE n.nspname = 'public'
+    `);
+    res.json(result.rows);
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+// TRIGGERS DISCOVERY
+app.get('/:slug/triggers', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  try {
+    const result = await pool.query(`
+      SELECT 
+        trigger_name as name,
+        event_object_table as table,
+        action_statement as definition,
+        action_timing as timing,
+        event_manipulation as event
+      FROM information_schema.triggers
+      WHERE trigger_schema = 'public'
+    `);
+    res.json(result.rows);
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/:slug/query', authenticateAdmin, async (req, res) => {
