@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Code2, 
@@ -26,7 +25,6 @@ import {
   Cpu,
   RefreshCw,
   Layout,
-  /* Added missing AlertCircle import */
   AlertCircle
 } from 'lucide-react';
 
@@ -41,6 +39,11 @@ interface ProjectAsset {
     notes?: string;
     db_object_name?: string;
   };
+}
+
+// Explicitly define the tree node type to fix recursive inference issues
+interface AssetTreeNode extends ProjectAsset {
+  children: AssetTreeNode[];
 }
 
 const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
@@ -177,7 +180,8 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   }, [assets, activeContext]);
 
   const treeData = useMemo(() => {
-    const buildTree = (parentId: string | null = null) => {
+    // FIX: Added explicit return type AssetTreeNode[] to buildTree for TS recursive inference
+    const buildTree = (parentId: string | null = null): AssetTreeNode[] => {
       return filteredAssets
         .filter(a => a.parent_id === parentId)
         .map(a => ({
@@ -195,7 +199,7 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
     setExpandedFolders(next);
   };
 
-  const renderTreeItem = (item: any) => {
+  const renderTreeItem = (item: AssetTreeNode) => {
     const isFolder = item.type === 'folder';
     const isExpanded = expandedFolders.has(item.id);
     const isSelected = selectedAsset?.id === item.id;
@@ -249,7 +253,6 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
       {/* Notifications */}
       {(error || successMsg) && (
         <div className={`fixed top-8 left-1/2 -translate-x-1/2 z-[400] p-5 rounded-3xl shadow-2xl flex items-center gap-4 animate-in slide-in-from-top-4 ${error ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
-          {/* Fix: AlertCircle was missing from imports */}
           {error ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
           <span className="text-sm font-black tracking-tight">{error || successMsg}</span>
           <button onClick={() => { setError(null); setSuccessMsg(null); }} className="ml-4 opacity-50"><X size={16} /></button>
