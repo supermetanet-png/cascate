@@ -22,52 +22,33 @@ http {
     server {
         listen 80;
         listen [::]:80;
-        server_name _; # Aceita IP ou qualquer domínio
+        server_name _; 
 
-        # Essencial para renovação de SSL No-Code
-        location /.well-known/acme-challenge/ {
-            root /var/www/certbot;
-        }
-
-        # Frontend adaptativo
+        # Frontend
         location / {
             proxy_pass http://frontend:80;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_read_timeout 300;
         }
 
-        # Control Plane (Auth e Projetos)
+        # Control Plane (Auth e Projetos) - Removido o "/" final do proxy_pass
         location /api/control/ {
-            proxy_pass http://backend_control:3000/;
+            proxy_pass http://backend_control:3000;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        # Data Plane (Query e Multi-tenancy)
+        # Data Plane (Query e Multi-tenancy) - Removido o "/" final do proxy_pass
         location /api/data/ {
-            proxy_pass http://backend_data:3000/;
+            proxy_pass http://backend_data:3000;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
         }
     }
-
-    # Bloco SSL sugerido (descomentar somente após gerar os .pem via Certbot ou Painel)
-    # server {
-    #     listen 443 ssl;
-    #     server_name cascata.unibloom.shop;
-    #     ssl_certificate /etc/nginx/ssl/live/cascata/fullchain.pem;
-    #     ssl_certificate_key /etc/nginx/ssl/live/cascata/privkey.pem;
-    #     
-    #     location / {
-    #         proxy_pass http://frontend:80;
-    #         ...
-    #     }
-    # }
 }

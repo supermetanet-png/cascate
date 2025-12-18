@@ -65,8 +65,12 @@ const cascataAuth = async (req: any, res: any, next: NextFunction) => {
   }
   const apikey = req.headers['apikey'] || req.query.apikey || req.headers['authorization']?.split(' ')[1];
   if (!apikey && !req.headers['authorization']) return res.status(401).json({ error: 'API Key Required' });
-  if (apikey === req.project?.service_key) { req.userRole = 'service_role'; return next(); }
-  req.userRole = 'anon';
+  
+  if (apikey === req.project?.service_key || apikey === req.project?.anon_key) { 
+    req.userRole = apikey === req.project?.service_key ? 'service_role' : 'anon'; 
+    return next(); 
+  }
+
   const authHeader = req.headers['authorization'];
   if (authHeader) {
     try {
@@ -86,7 +90,7 @@ app.post('/api/control/auth/login', async (req, res) => {
   if (admin && admin.password_hash === password) {
     const token = jwt.sign({ sub: admin.id, role: 'admin' }, process.env.SYSTEM_JWT_SECRET || 'secret');
     res.json({ token });
-  } else res.status(401).json({ error: 'Invalid admin' });
+  } else res.status(401).json({ error: 'Invalid admin credentials' });
 });
 
 app.get('/api/control/projects', cascataAuth as any, async (req, res) => {
@@ -110,23 +114,72 @@ app.post('/api/control/projects', cascataAuth as any, async (req: any, res: any)
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-// --- DATA PLANE DISCOVERY (NECESSARY FOR RPC MANAGER) ---
+app.post('/api/control/projects/:slug/rotate-keys', cascataAuth as any, async (req, res) => {
+  const { type } = req.body;
+  const newKey = generateKey();
+  const column = type === 'anon' ? 'anon_key' : type === 'service' ? 'service_key' : 'jwt_secret';
+  await systemPool.query(`UPDATE system.projects SET ${column} = $1 WHERE slug = $2`, [newKey, req.params.slug]);
+  res.json({ success: true, newKey });
+});
 
-app.get('/api/data/:slug/functions', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
+// --- DATA PLANE - RLS & POLICIES ---
+
+app.get('/api/data/:slug/policies', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
   const result = await req.projectPool.query(`
-    SELECT routine_name as name, routine_type as type 
-    FROM information_schema.routines 
-    WHERE routine_schema = 'public'
+    SELECT schemaname, tablename, policyname, roles, cmd, qual, with_check 
+    FROM pg_policies 
+    WHERE schemaname = 'public'
   `);
   res.json(result.rows);
 });
 
+app.post('/api/data/:slug/policies', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
+  const { name, table, command, role, using, withCheck } = req.body;
+  const sql = `
+    ALTER TABLE public."${table}" ENABLE ROW LEVEL SECURITY;
+    CREATE POLICY "${name}" ON public."${table}" 
+    FOR ${command} TO ${role} 
+    USING (${using}) 
+    ${withCheck ? `WITH CHECK (${withCheck})` : ''};
+  `;
+  try {
+    await req.projectPool.query(sql);
+    res.json({ success: true });
+  } catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+
+app.delete('/api/data/:slug/policies/:table/:name', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
+  try {
+    await req.projectPool.query(`DROP POLICY "${req.params.name}" ON public."${req.params.table}"`);
+    res.json({ success: true });
+  } catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+
+// --- DATA PLANE - WEBHOOKS ---
+
+app.get('/api/control/projects/:slug/webhooks', cascataAuth as any, async (req: any, res: any) => {
+  const result = await systemPool.query('SELECT * FROM system.webhooks WHERE project_slug = $1', [req.params.slug]);
+  res.json(result.rows);
+});
+
+app.post('/api/control/projects/:slug/webhooks', cascataAuth as any, async (req: any, res: any) => {
+  const { target_url, event_type, table_name } = req.body;
+  const result = await systemPool.query(
+    'INSERT INTO system.webhooks (project_slug, target_url, event_type, table_name) VALUES ($1, $2, $3, $4) RETURNING *',
+    [req.params.slug, target_url, event_type, table_name]
+  );
+  res.json(result.rows[0]);
+});
+
+// --- DATA PLANE - DISCOVERY ---
+
+app.get('/api/data/:slug/functions', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
+  const result = await req.projectPool.query(`SELECT routine_name as name, routine_type as type FROM information_schema.routines WHERE routine_schema = 'public'`);
+  res.json(result.rows);
+});
+
 app.get('/api/data/:slug/triggers', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
-  const result = await req.projectPool.query(`
-    SELECT trigger_name as name, event_manipulation as event, event_object_table as table 
-    FROM information_schema.triggers 
-    WHERE trigger_schema = 'public'
-  `);
+  const result = await req.projectPool.query(`SELECT trigger_name as name, event_manipulation as event, event_object_table as table FROM information_schema.triggers WHERE trigger_schema = 'public'`);
   res.json(result.rows);
 });
 
@@ -193,16 +246,16 @@ app.get('/api/data/:slug/tables/:table/data', resolveProject as any, cascataAuth
   } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
-app.post('/api/data/:slug/tables/:table/rows', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
-  const { table } = req.params;
-  const { data } = req.body;
-  const keys = Object.keys(data);
-  const placeholders = keys.map((_, i) => `$${i + 1}`).join(',');
-  const columns = keys.map(k => `"${k}"`).join(',');
-  try {
-    const result = await req.projectPool.query(`INSERT INTO public."${table}" (${columns}) VALUES (${placeholders}) RETURNING *`, Object.values(data));
-    res.json(result.rows[0]);
-  } catch (e: any) { res.status(400).json({ error: e.message }); }
+// --- UI SETTINGS ---
+
+app.get('/api/data/:slug/ui-settings/:table', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
+  const result = await systemPool.query('SELECT settings FROM system.ui_settings WHERE project_slug = $1 AND table_name = $2', [req.project.slug, req.params.table]);
+  res.json(result.rows[0]?.settings || {});
+});
+
+app.post('/api/data/:slug/ui-settings/:table', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
+  await systemPool.query('INSERT INTO system.ui_settings (project_slug, table_name, settings) VALUES ($1, $2, $3) ON CONFLICT (project_slug, table_name) DO UPDATE SET settings = $3', [req.project.slug, req.params.table, req.body.settings]);
+  res.json({ success: true });
 });
 
 // --- AUTH & STORAGE ---
@@ -212,16 +265,18 @@ app.get('/api/data/:slug/auth/users', resolveProject as any, cascataAuth as any,
   res.json(result.rows);
 });
 
-app.post('/api/data/:slug/auth/users', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
-  const { email, password } = req.body;
-  const result = await req.projectPool.query('INSERT INTO auth.users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at', [email, password]);
-  res.json(result.rows[0]);
-});
-
 app.get('/api/data/:slug/storage/buckets', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
   const p = path.join(STORAGE_ROOT, req.project.slug);
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
-  res.json(fs.readdirSync(p).filter(f => fs.lstatSync(path.join(p, f)).isDirectory()).map(b => ({ name: b })));
+  const folders = fs.readdirSync(p).filter(f => fs.lstatSync(path.join(p, f)).isDirectory());
+  res.json(folders.map(b => ({ name: b })));
+});
+
+app.get('/api/data/:slug/storage/:bucket/list', resolveProject as any, cascataAuth as any, async (req: any, res: any) => {
+  const p = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket);
+  if (!fs.existsSync(p)) return res.json({ files: [] });
+  const files = fs.readdirSync(p).map(f => ({ name: f }));
+  res.json({ files });
 });
 
 app.post('/api/data/:slug/storage/:bucket/upload', resolveProject as any, cascataAuth as any, upload.single('file') as any, async (req: any, res: any) => {
@@ -232,4 +287,4 @@ app.post('/api/data/:slug/storage/:bucket/upload', resolveProject as any, cascat
   res.json({ success: true, path: req.file.originalname });
 });
 
-app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v2.1 Operacional na porta ${PORT}`));
+app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v2.5 Operacional na porta ${PORT}`));
