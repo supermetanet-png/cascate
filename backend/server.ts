@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
@@ -56,13 +55,33 @@ app.post('/auth/login', async (req, res) => {
     const result = await systemPool.query('SELECT * FROM system.admin_users WHERE email = $1', [email]);
     if (result.rows.length === 0) return res.status(401).json({ error: 'Admin account not found' });
     const user = result.rows[0];
-    const isValid = (password === 'admin123' && user.email === 'admin@cascata.io') || await bcrypt.compare(password, user.password_hash);
+    
+    // Support default password 'admin123' for first login if no hash is set, otherwise use bcrypt
+    const isValid = (user.password_hash.startsWith('$2') 
+      ? await bcrypt.compare(password, user.password_hash)
+      : password === user.password_hash || password === 'admin123');
+
     if (!isValid) return res.status(401).json({ error: 'Invalid security credentials' });
     
-    const token = jwt.sign({ id: user.id, role: 'admin' }, SYSTEM_JWT_SECRET, { expiresIn: '24h' });
+    const token = jwt.sign({ id: user.id, role: 'admin', email: user.email }, SYSTEM_JWT_SECRET, { expiresIn: '24h' });
     res.json({ token, user: { email: user.email } });
   } catch (err) {
     res.status(500).json({ error: 'System Authentication Failure' });
+  }
+});
+
+// Fix for line 79: Explicitly typing 'req' as 'any' to resolve 'Property user does not exist on type Request' error.
+app.post('/auth/update-admin', authenticateAdmin, async (req: any, res: any) => {
+  const { email, password } = req.body;
+  try {
+    const hashedPassword = await bcrypt.hash(password, 12);
+    await systemPool.query(
+      'UPDATE system.admin_users SET email = $1, password_hash = $2 WHERE id = $3',
+      [email, hashedPassword, (req.user as any).id]
+    );
+    res.json({ success: true, message: 'Admin credentials updated.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -80,7 +99,6 @@ app.post('/projects', authenticateAdmin, async (req, res) => {
     url.pathname = `/${dbName}`;
     const tempPool = new Pool({ connectionString: url.toString() });
     
-    // Initial provisioning: Schemas, Basic Auth tables and DEFAULT ROLES
     await tempPool.query(`
       CREATE SCHEMA IF NOT EXISTS auth;
       CREATE TABLE IF NOT EXISTS auth.users (
@@ -91,7 +109,6 @@ app.post('/projects', authenticateAdmin, async (req, res) => {
       );
       CREATE SCHEMA IF NOT EXISTS public;
 
-      -- Create standard roles for projects
       DO $$
       BEGIN
         IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'authenticated') THEN
@@ -103,7 +120,6 @@ app.post('/projects', authenticateAdmin, async (req, res) => {
       END
       $$;
 
-      -- Grant base permissions
       GRANT USAGE ON SCHEMA public TO authenticated, anon;
       GRANT USAGE ON SCHEMA auth TO authenticated, anon;
     `);
@@ -118,6 +134,34 @@ app.post('/projects', authenticateAdmin, async (req, res) => {
     res.status(201).json(result.rows[0]);
   } catch (err: any) {
     res.status(500).json({ error: `Provisioning Error: ${err.message}` });
+  }
+});
+
+// --- AUTH DATA ROUTES (FIX 404) ---
+app.get('/:slug/auth/users', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  try {
+    const result = await pool.query('SELECT id, email, created_at FROM auth.users ORDER BY created_at DESC');
+    res.json(result.rows);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/:slug/auth/users', authenticateAdmin, async (req, res) => {
+  const pool = await getProjectPool(req.params.slug);
+  if (!pool) return res.status(404).json({ error: 'Project not found' });
+  const { email, password } = req.body;
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const result = await pool.query(
+      'INSERT INTO auth.users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at',
+      [email, hashedPassword]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -141,7 +185,6 @@ app.post('/:slug/ui-settings/:table', authenticateAdmin, async (req, res) => {
   res.json({ success: true });
 });
 
-// --- VIRTUAL FOLDERS / ASSETS ---
 app.get('/:slug/assets', authenticateAdmin, async (req, res) => {
   const result = await systemPool.query('SELECT * FROM system.project_assets WHERE project_slug = $1 ORDER BY created_at ASC', [req.params.slug]);
   res.json(result.rows);
@@ -168,9 +211,6 @@ app.delete('/:slug/assets/:id', authenticateAdmin, async (req, res) => {
   res.json({ success: true });
 });
 
-// --- DATA PLANE ---
-
-// PROJECT STATS ENDPOINT
 app.get('/:slug/stats', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
@@ -214,7 +254,6 @@ app.get('/:slug/tables', authenticateAdmin, async (req, res) => {
   }
 });
 
-// FUNCTIONS DISCOVERY
 app.get('/:slug/functions', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
@@ -233,7 +272,6 @@ app.get('/:slug/functions', authenticateAdmin, async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-// TRIGGERS DISCOVERY
 app.get('/:slug/triggers', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
@@ -266,7 +304,6 @@ app.post('/:slug/query', authenticateAdmin, async (req, res) => {
   }
 });
 
-// --- RLS POLICIES ---
 app.get('/:slug/policies', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
@@ -294,13 +331,10 @@ app.post('/:slug/policies', authenticateAdmin, async (req, res) => {
   if (!pool) return res.status(404).json({ error: 'Project not found' });
   const { name, table, command, role, using, withCheck } = req.body;
   try {
-    // Enable RLS just in case it's not enabled
     await pool.query(`ALTER TABLE public."${table}" ENABLE ROW LEVEL SECURITY`);
-    
     let sql = `CREATE POLICY "${name}" ON public."${table}" FOR ${command} TO ${role}`;
     if (using) sql += ` USING (${using})`;
     if (withCheck) sql += ` WITH CHECK (${withCheck})`;
-    
     await pool.query(sql);
     res.status(201).json({ success: true });
   } catch (err: any) {
@@ -319,7 +353,6 @@ app.delete('/:slug/policies/:table/:name', authenticateAdmin, async (req, res) =
   }
 });
 
-// --- TABLE ROUTES ---
 app.put('/:slug/tables/:table/rename', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
@@ -394,15 +427,12 @@ app.put('/:slug/tables/:table/rows', authenticateAdmin, async (req, res) => {
   const pool = await getProjectPool(req.params.slug);
   if (!pool) return res.status(404).json({ error: 'Project not found' });
   const { data, pkColumn, pkValue } = req.body;
-  
   const updateData = { ...data };
-  delete updateData[pkColumn]; // Não atualizar a própria PK
-  
+  delete updateData[pkColumn];
   const entries = Object.entries(updateData);
   const setClause = entries.map(([k], i) => `"${k}" = $${i + 1}`).join(', ');
   const values = entries.map(([_, v]) => v);
   values.push(pkValue);
-  
   try {
     await pool.query(`UPDATE public."${req.params.table}" SET ${setClause} WHERE "${pkColumn}" = $${values.length}`, values);
     res.json({ success: true });
