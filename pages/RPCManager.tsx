@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Code2, 
@@ -61,7 +60,7 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   // Editor State
   const [editorSql, setEditorSql] = useState('-- Writing high-performance SQL...');
   const [notes, setNotes] = useState('');
-  const [testParams, setTestParams] = useState('{\n  "param1": "value"\n}');
+  const [testParams, setTestParams] = useState('{}');
   const [testResult, setTestResult] = useState<any>(null);
   
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -110,6 +109,36 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
     return () => window.removeEventListener('click', hide);
   }, [projectId]);
 
+  // Robust clipboard fallback for non-secure contexts (HTTP/IP)
+  const safeCopyToClipboard = async (text: string) => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-9999px";
+        textArea.style.top = "0";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      }
+      setSuccessMsg('Copied to clipboard');
+      setTimeout(() => setSuccessMsg(null), 2000);
+    } catch (err) {
+      setError('Failed to copy to clipboard');
+    }
+  };
+
+  const extractObjectName = (sql: string): string | null => {
+    // Regex optimized to find names in CREATE FUNCTION, TRIGGER, VIEW, PROCEDURE
+    const match = sql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|TRIGGER|VIEW|PROCEDURE)\s+(?:public\.)?(\w+)/i);
+    return match ? match[1] : null;
+  };
+
   const handleCreateAsset = async (name: string, type: AssetType, parentId: string | null = null) => {
     try {
       const newAsset = await fetchWithAuth(`/api/data/${projectId}/assets`, {
@@ -119,7 +148,7 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
       setAssets([...assets, newAsset]);
       if (type !== 'folder') {
         setSelectedAsset(newAsset);
-        setEditorSql('-- Writing high-performance SQL...');
+        setEditorSql('-- Write your SQL here...');
         setNotes('');
       }
       setSuccessMsg(`${type.toUpperCase()} initialized.`);
@@ -133,26 +162,31 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
     if (!selectedAsset) return;
     setExecuting(true);
     try {
-      // 1. Run the SQL on the DB
+      // 1. Compile on Database
       await fetchWithAuth(`/api/data/${projectId}/query`, {
         method: 'POST',
         body: JSON.stringify({ sql: editorSql })
       });
       
-      // 2. Update metadata (Notes and SQL persistence) for THIS asset specifically (using ID)
+      // 2. Intelligence: Auto-rename asset based on SQL definition
+      const detectedName = extractObjectName(editorSql);
+      const finalName = detectedName || selectedAsset.name;
+
+      // 3. Persist metadata and updated name (UPSERT logic in backend handles ID)
       const updated = await fetchWithAuth(`/api/data/${projectId}/assets`, {
         method: 'POST',
         body: JSON.stringify({ 
-          ...selectedAsset, 
+          ...selectedAsset,
+          name: finalName,
           metadata: { ...selectedAsset.metadata, notes, sql: editorSql } 
         })
       });
       
       setAssets(assets.map(a => a.id === updated.id ? updated : a));
-      setSelectedAsset(updated); // Maintain selection on the updated object
-      setSuccessMsg('Object compiled and committed.');
+      setSelectedAsset(updated);
+      setSuccessMsg(`Compiled successfully as "${finalName}"`);
       setTimeout(() => setSuccessMsg(null), 2000);
-      fetchData(); // Sync database discovery
+      fetchData(); // Sync discovery
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -193,10 +227,19 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
     if (!selectedAsset) return;
     setExecuting(true);
     try {
-      const params = JSON.parse(testParams);
+      let params = {};
+      try { params = JSON.parse(testParams); } catch(e) { /* ignore parse error */ }
+      
+      const paramValues = Object.values(params);
+      
+      // If no params, do not pass anything to avoid "function(unknown) does not exist" errors
+      const argsString = paramValues.length > 0 
+        ? paramValues.map(v => typeof v === 'string' ? `'${v}'` : v).join(', ') 
+        : '';
+        
       const sql = selectedAsset.type === 'rpc' 
-        ? `SELECT public.${selectedAsset.name}(${Object.values(params).map(v => typeof v === 'string' ? `'${v}'` : v).join(', ')})`
-        : `-- Manual test not applicable for ${selectedAsset.type}`;
+        ? `SELECT public.${selectedAsset.name}(${argsString})`
+        : `-- Execution check for ${selectedAsset.type}`;
         
       const result = await fetchWithAuth(`/api/data/${projectId}/query`, {
         method: 'POST',
@@ -215,9 +258,7 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
     const curl = `curl -X POST https://api.cascata.io/data/${projectId}/rpc/${selectedAsset.name} \\
   -H "Content-Type: application/json" \\
   -d '${testParams}'`;
-    navigator.clipboard.writeText(curl);
-    setSuccessMsg('cURL copied to clipboard');
-    setTimeout(() => setSuccessMsg(null), 2000);
+    safeCopyToClipboard(curl);
   };
 
   const filteredAssets = useMemo(() => {
@@ -318,8 +359,7 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
             className={`w-full flex items-center justify-between px-4 py-3 text-xs font-black transition-all rounded-xl ${contextMenu.item.type === 'folder' && contextMenu.item.children.length > 0 ? 'text-slate-300 cursor-not-allowed' : 'text-rose-600 hover:bg-rose-50'}`}
           >
             <div className="flex items-center gap-3"><Trash2 size={14}/> Delete</div>
-            {/* Fix: Lucide icons do not support 'title' prop directly in types, wrapping in a span instead to provide tooltip functionality safely */}
-            {contextMenu.item.type === 'folder' && contextMenu.item.children.length > 0 && <span title="Folder must be empty"><Info size={12} /></span>}
+            {contextMenu.item.type === 'folder' && contextMenu.item.children.length > 0 && <span title="Folder must be empty" className="text-slate-400"><Info size={12} /></span>}
           </button>
         </div>
       )}
@@ -388,7 +428,7 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
             <div className="flex-1 flex flex-col">
               <div className="bg-white border-b border-slate-200 px-10 py-5 flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-6">
-                  <div className="flex flex-col"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Target Asset</span><span className="text-xl font-black text-slate-900 tracking-tight font-mono">{selectedAsset.name}</span></div>
+                  <div className="flex flex-col"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Asset Identifier</span><span className="text-xl font-black text-slate-900 tracking-tight font-mono">{selectedAsset.name}</span></div>
                   <div className="h-10 w-[1px] bg-slate-200"></div>
                   <div className="flex items-center gap-2"><span className={`w-2.5 h-2.5 rounded-full ${dbObjects.some(o => o.name === selectedAsset.name) ? 'bg-emerald-500' : 'bg-slate-200 animate-pulse'}`}></span><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{dbObjects.some(o => o.name === selectedAsset.name) ? 'Synchronized' : 'Draft Mode'}</span></div>
                 </div>
@@ -407,17 +447,17 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
                       className="flex-1 bg-slate-950 text-emerald-400 p-12 font-mono text-base outline-none resize-none spellcheck-false" 
                     />
                     
-                    {/* Documentation Column (15%) - Darkened as requested */}
+                    {/* Documentation Column (High Contrast Dark) */}
                     <div className="w-[200px] bg-[#020617] border-l border-white/5 flex flex-col p-6 shrink-0 shadow-inner">
-                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4 flex items-center gap-2 border-b border-white/5 pb-4"><BookOpen size={14} className="text-indigo-400" /> Documentation</span>
+                       <span className="text-[10px] font-black text-slate-200 uppercase tracking-[0.2em] mb-4 flex items-center gap-2 border-b border-white/10 pb-4"><BookOpen size={14} className="text-indigo-400" /> Notes</span>
                        <textarea 
                         value={notes} 
                         onChange={(e) => setNotes(e.target.value)}
-                        placeholder="Project logic description..." 
-                        className="flex-1 bg-transparent text-slate-400 text-xs font-medium leading-relaxed outline-none resize-none placeholder:text-slate-700" 
+                        placeholder="Describe the logic persona..." 
+                        className="flex-1 bg-transparent text-slate-300 text-xs font-medium leading-relaxed outline-none resize-none placeholder:text-slate-800" 
                        />
                        <div className="mt-6 p-4 bg-indigo-500/5 rounded-2xl border border-indigo-500/10">
-                         <p className="text-[9px] text-indigo-400 font-black leading-relaxed">Persisted in system metadata table.</p>
+                         <p className="text-[9px] text-indigo-400 font-black leading-relaxed">Changes persist on deploy.</p>
                        </div>
                     </div>
                   </div>
@@ -430,14 +470,14 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
                         value={testParams} 
                         onChange={(e) => setTestParams(e.target.value)}
                         className="flex-1 bg-slate-50 border border-slate-200 rounded-[2.5rem] p-8 font-mono text-sm outline-none focus:ring-4 focus:ring-indigo-500/5 transition-all shadow-inner" 
-                        placeholder='{ "key": "value" }'
+                        placeholder='{ "param": "value" }'
                       />
                     </div>
                     <div className="w-[480px] flex flex-col gap-4">
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Terminal size={14} className="text-emerald-500"/> Output Manifest</span>
                         <div className="flex items-center gap-2">
-                          {selectedAsset.type === 'rpc' && <button onClick={copyCurl} title="Copy cURL" className="p-3 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"><Copy size={16}/></button>}
+                          <button onClick={copyCurl} title="Copy cURL" className="p-3 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"><Copy size={16}/></button>
                           <button onClick={executeTest} disabled={executing} className="bg-emerald-500 text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-3 hover:bg-emerald-600 transition-all shadow-xl shadow-emerald-500/20">{executing ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Run Logic</button>
                         </div>
                       </div>
