@@ -1,6 +1,6 @@
 {
-  "name": "Cascata Management Studio 1",
-  "description": "A production-grade self-hosted BaaS platform management interface for multi-tenant project orchestration, database exploration, and RLS policy management.",
+  "name": "Cascata Independent BaaS",
+  "description": "Plataforma de infraestrutura de dados multi-tenant auto-hospedada com SDK nativo e isolamento físico de esquemas.",
   "requestFramePermissions": [
     "geolocation"
   ]

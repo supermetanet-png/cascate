@@ -16,30 +16,30 @@ http {
     sendfile        on;
     keepalive_timeout  65;
 
-    # Configuração resisiente: O Nginx ouvirá na 80 sempre.
-    # O redirecionamento para 443 deve ser feito apenas quando o certificado existir no disco.
-    
+    # Otimização para Uploads grandes (Importação de dados)
+    client_max_body_size 100M;
+
     server {
         listen 80;
         listen [::]:80;
-        server_name _;
+        server_name _; # Aceita IP ou qualquer domínio
 
-        # Suporte para Let's Encrypt ACME Challenge (Essencial para No-Coders)
-        # O Certbot colocará os arquivos em /var/www/certbot
+        # Essencial para renovação de SSL No-Code
         location /.well-known/acme-challenge/ {
             root /var/www/certbot;
         }
 
-        # Frontend
+        # Frontend adaptativo
         location / {
             proxy_pass http://frontend:80;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 300;
         }
 
-        # Control Plane API
+        # Control Plane (Auth e Projetos)
         location /api/control/ {
             proxy_pass http://backend_control:3000/;
             proxy_set_header Host $host;
@@ -48,7 +48,7 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        # Data Plane API
+        # Data Plane (Query e Multi-tenancy)
         location /api/data/ {
             proxy_pass http://backend_data:3000/;
             proxy_set_header Host $host;
@@ -58,12 +58,16 @@ http {
         }
     }
 
-    # BLOCO SSL (Comentar para evitar crash do container Nginx se os arquivos .pem não existirem)
+    # Bloco SSL sugerido (descomentar somente após gerar os .pem via Certbot ou Painel)
     # server {
     #     listen 443 ssl;
     #     server_name cascata.unibloom.shop;
-    #     ssl_certificate /etc/letsencrypt/live/cascata.unibloom.shop/fullchain.pem;
-    #     ssl_certificate_key /etc/letsencrypt/live/cascata.unibloom.shop/privkey.pem;
-    #     ...
+    #     ssl_certificate /etc/nginx/ssl/live/cascata/fullchain.pem;
+    #     ssl_certificate_key /etc/nginx/ssl/live/cascata/privkey.pem;
+    #     
+    #     location / {
+    #         proxy_pass http://frontend:80;
+    #         ...
+    #     }
     # }
 }
