@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Shield, Lock, Unlock, Plus, Trash2, Edit2, AlertCircle, Loader2, X, Terminal, CheckCircle2, Zap, User, Users, Globe, Eye, Code } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Shield, Lock, Unlock, Plus, Trash2, Edit2, AlertCircle, Loader2, X, Terminal, CheckCircle2, Zap, User, Users, Globe, Eye, Code, ChevronDown, ChevronRight, Copy } from 'lucide-react';
 
 const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [policies, setPolicies] = useState<any[]>([]);
@@ -8,16 +8,22 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const [showDuplicateModal, setShowDuplicateModal] = useState(false);
   const [executing, setExecuting] = useState(false);
+  const [expandedTables, setExpandedTables] = useState<Set<string>>(new Set());
+  const [isEditing, setIsEditing] = useState(false);
+  const [selectedPolicyToDuplicate, setSelectedPolicyToDuplicate] = useState<any>(null);
+  const [duplicateTargetTable, setDuplicateTargetTable] = useState('');
 
-  // New Policy Form State
+  // New/Edit Policy Form State
   const [newPolicy, setNewPolicy] = useState({
     name: '',
     table: '',
     command: 'SELECT',
     role: 'public',
     using: 'true',
-    withCheck: ''
+    withCheck: '',
+    oldName: '' // To handle renames during edit
   });
 
   const fetchWithAuth = useCallback(async (url: string, options: any = {}) => {
@@ -42,9 +48,15 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
       ]);
       setPolicies(policiesData);
       setTables(tablesData);
-      if (tablesData.length > 0) {
+      if (tablesData.length > 0 && !newPolicy.table) {
         setNewPolicy(prev => ({ ...prev, table: tablesData[0].name }));
       }
+      
+      // Auto-expand tables that have policies
+      // Fix: Explicitly define Set type and ensure mapping returns strings to avoid Set<unknown> inference
+      const tablesWithPolicies = new Set<string>((policiesData as any[]).map((p: any) => String(p.tablename)));
+      setExpandedTables(tablesWithPolicies);
+
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -56,13 +68,28 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
     fetchData();
   }, [projectId]);
 
-  // Helper to safely parse Postgres roles which can arrive as an array or as a string like "{public}"
   const safeRoles = (roles: any): string[] => {
     if (Array.isArray(roles)) return roles;
     if (typeof roles === 'string') {
       return roles.replace(/[{}]/g, '').split(',').map(r => r.trim());
     }
     return [];
+  };
+
+  const groupedPolicies = useMemo(() => {
+    const groups: Record<string, any[]> = {};
+    policies.forEach(p => {
+      if (!groups[p.tablename]) groups[p.tablename] = [];
+      groups[p.tablename].push(p);
+    });
+    return groups;
+  }, [policies]);
+
+  const toggleTable = (tableName: string) => {
+    const next = new Set(expandedTables);
+    if (next.has(tableName)) next.delete(tableName);
+    else next.add(tableName);
+    setExpandedTables(next);
   };
 
   const handleDelete = async (table: string, name: string) => {
@@ -80,19 +107,74 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
     }
   };
 
-  const handleCreate = async () => {
+  const handleEdit = (p: any) => {
+    const roles = safeRoles(p.roles);
+    setNewPolicy({
+      name: p.policyname,
+      oldName: p.policyname,
+      table: p.tablename,
+      command: p.cmd,
+      role: roles[0] || 'public',
+      using: p.qual || 'true',
+      withCheck: p.with_check || ''
+    });
+    setIsEditing(true);
+    setShowModal(true);
+  };
+
+  const openDuplicate = (p: any) => {
+    setSelectedPolicyToDuplicate(p);
+    setDuplicateTargetTable(tables[0]?.name || '');
+    setShowDuplicateModal(true);
+  };
+
+  const handleDuplicate = async () => {
+    if (!selectedPolicyToDuplicate || !duplicateTargetTable) return;
+    setExecuting(true);
+    try {
+      const roles = safeRoles(selectedPolicyToDuplicate.roles);
+      await fetchWithAuth(`/api/data/${projectId}/policies`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: `${selectedPolicyToDuplicate.policyname} (Copy)`,
+          table: duplicateTargetTable,
+          command: selectedPolicyToDuplicate.cmd,
+          role: roles[0] || 'public',
+          using: selectedPolicyToDuplicate.qual || 'true',
+          withCheck: selectedPolicyToDuplicate.with_check || ''
+        })
+      });
+      setShowDuplicateModal(false);
+      setSuccessMsg(`Policy duplicated to ${duplicateTargetTable}.`);
+      fetchData();
+      setTimeout(() => setSuccessMsg(null), 3000);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setExecuting(false);
+    }
+  };
+
+  const handleCreateOrUpdate = async () => {
     if (!newPolicy.name || !newPolicy.table) {
       setError('Policy name and table are required.');
       return;
     }
     setExecuting(true);
     try {
+      // If editing, we drop the old one first
+      if (isEditing) {
+        await fetchWithAuth(`/api/data/${projectId}/policies/${newPolicy.table}/${newPolicy.oldName}`, { method: 'DELETE' });
+      }
+
       await fetchWithAuth(`/api/data/${projectId}/policies`, {
         method: 'POST',
         body: JSON.stringify(newPolicy)
       });
+
       setShowModal(false);
-      setSuccessMsg('Policy created and RLS enforced.');
+      setSuccessMsg(isEditing ? 'Policy updated successfully.' : 'Policy created and RLS enforced.');
+      setIsEditing(false);
       fetchData();
       setTimeout(() => setSuccessMsg(null), 3000);
     } catch (err: any) {
@@ -139,12 +221,13 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
           </div>
           <div>
             <h1 className="text-4xl font-black text-slate-900 tracking-tighter leading-none">Access Control</h1>
-            <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px] mt-2">Row-Level Security Architecture</p>
+            <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px] mt-2">Grouped Security Policies</p>
           </div>
         </div>
         <button 
           onClick={() => {
-            setNewPolicy({ name: '', table: tables[0]?.name || '', command: 'SELECT', role: 'public', using: 'true', withCheck: '' });
+            setIsEditing(false);
+            setNewPolicy({ name: '', table: tables[0]?.name || '', command: 'SELECT', role: 'public', using: 'true', withCheck: '', oldName: '' });
             setShowModal(true);
           }} 
           className="bg-indigo-600 text-white px-8 py-4 rounded-[1.5rem] font-black flex items-center gap-3 hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100 active:scale-95"
@@ -155,103 +238,137 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
 
       <div className="flex-1 overflow-y-auto p-10">
         <div className="max-w-6xl mx-auto space-y-12">
-          {/* Welcome/Banner */}
+          {/* Summary Banner */}
           <div className="bg-indigo-600 rounded-[3rem] p-12 text-white flex items-center gap-10 relative overflow-hidden shadow-2xl shadow-indigo-100">
             <div className="absolute top-0 right-0 p-12 opacity-10"><Shield size={240} /></div>
             <div className="w-24 h-24 bg-white/20 rounded-[2.5rem] backdrop-blur-md flex items-center justify-center shrink-0">
               <Zap size={48} className="text-white" />
             </div>
             <div className="relative z-10">
-              <h4 className="text-3xl font-black tracking-tight mb-2">Advanced Data Orchestration</h4>
-              <p className="text-indigo-100 text-lg font-medium leading-relaxed max-w-3xl"> cascata uses native PostgreSQL RLS. Policies are compiled into the query execution plan, ensuring high-performance isolation for multi-tenant applications.</p>
+              <h4 className="text-3xl font-black tracking-tight mb-2">Policy Isolation Layer</h4>
+              <p className="text-indigo-100 text-lg font-medium leading-relaxed max-w-3xl">Manage row-level permissions grouped by data entity. Policies ensure that users can only access the rows intended for their role persona.</p>
             </div>
           </div>
 
-          <div className="space-y-6">
+          <div className="space-y-8">
             <div className="flex items-center justify-between px-4">
-              <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em]">Active Security Manifest ({policies.length})</h3>
+              <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em]">Tables with Policies ({Object.keys(groupedPolicies).length})</h3>
             </div>
 
             {loading ? (
               <div className="flex flex-col items-center justify-center py-40 text-slate-300 gap-6">
                 <Loader2 className="animate-spin text-indigo-600" size={48} />
-                <span className="text-xs font-black uppercase tracking-widest">Scanning Catalog...</span>
+                <span className="text-xs font-black uppercase tracking-widest">Compiling Catalog...</span>
               </div>
-            ) : policies.length === 0 ? (
+            ) : Object.keys(groupedPolicies).length === 0 ? (
               <div className="bg-white border-4 border-dashed border-slate-100 rounded-[4rem] p-32 text-center flex flex-col items-center shadow-sm">
                 <Unlock className="text-slate-100 mb-8" size={120} />
-                <h4 className="text-2xl font-black text-slate-300 tracking-tight uppercase tracking-[0.1em]">Public Instance (RLS Disabled)</h4>
-                <p className="text-slate-400 mt-4 font-medium max-w-sm">Data access is currently open. Create a policy to start isolating rows by role or identity.</p>
+                <h4 className="text-2xl font-black text-slate-300 tracking-tight uppercase tracking-[0.1em]">No Active Policies</h4>
+                <p className="text-slate-400 mt-4 font-medium max-w-sm">RLS is disabled across all tables. All data is currently public unless restricted by grants.</p>
                 <button 
                   onClick={() => setShowModal(true)} 
                   className="mt-10 bg-slate-900 text-white px-10 py-4 rounded-[1.5rem] font-black text-xs uppercase tracking-widest hover:bg-slate-800 transition-all active:scale-95"
                 >
-                  Armor your Data
+                  Create First Policy
                 </button>
               </div>
             ) : (
-              <div className="grid grid-cols-1 gap-6 pb-20">
-                {policies.map((p, i) => {
-                  const roles = safeRoles(p.roles);
-                  return (
-                    <div key={i} className="bg-white border border-slate-200 rounded-[2.5rem] p-8 hover:border-indigo-300 hover:shadow-2xl hover:shadow-indigo-100/50 transition-all group flex flex-col gap-8">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-6">
-                          <div className="w-14 h-14 bg-slate-50 text-slate-300 rounded-2xl flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all duration-500">
-                            <Lock size={24} />
-                          </div>
-                          <div>
-                            <h4 className="text-xl font-black text-slate-900 group-hover:text-indigo-600 transition-colors">{p.policyname}</h4>
-                            <div className="flex items-center gap-3 mt-1">
-                              <span className="text-[10px] font-black text-indigo-500 bg-indigo-50 px-2.5 py-1 rounded-lg uppercase tracking-widest border border-indigo-100">{p.tablename}</span>
-                              <span className="w-1.5 h-1.5 bg-slate-200 rounded-full" />
-                              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{p.cmd}</span>
-                              <span className="w-1.5 h-1.5 bg-slate-200 rounded-full" />
-                              <div className="flex items-center gap-1.5">
-                                {roles.includes('authenticated') ? <Users size={12} className="text-indigo-400" /> : roles.includes('anon') ? <User size={12} className="text-slate-400" /> : <Globe size={12} className="text-emerald-400" />}
-                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{roles.join(', ')}</span>
+              <div className="space-y-10 pb-20">
+                {Object.entries(groupedPolicies).map(([tableName, tablePolicies]) => (
+                  <div key={tableName} className="bg-white border border-slate-200 rounded-[3rem] overflow-hidden shadow-sm hover:shadow-xl hover:shadow-slate-200/50 transition-all duration-500">
+                    {/* Table Header */}
+                    <button 
+                      onClick={() => toggleTable(tableName)}
+                      className="w-full flex items-center justify-between p-10 hover:bg-slate-50/50 transition-colors text-left border-b border-slate-100"
+                    >
+                      <div className="flex items-center gap-6">
+                        <div className="w-14 h-14 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center shadow-inner">
+                          <Code size={24} />
+                        </div>
+                        <div>
+                          <h4 className="text-2xl font-black text-slate-900 tracking-tight">public.{tableName}</h4>
+                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{tablePolicies.length} Active Policies</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <span className={`w-8 h-8 rounded-full flex items-center justify-center transition-transform duration-300 ${expandedTables.has(tableName) ? 'rotate-180 bg-slate-900 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                          <ChevronDown size={20} />
+                        </span>
+                      </div>
+                    </button>
+
+                    {/* Policy List (Expandable) */}
+                    {expandedTables.has(tableName) && (
+                      <div className="p-10 space-y-6 bg-slate-50/30 animate-in slide-in-from-top-2 duration-300">
+                        {tablePolicies.map((p, i) => {
+                          const roles = safeRoles(p.roles);
+                          return (
+                            <div key={i} className="bg-white border border-slate-200 rounded-[2.5rem] p-8 hover:border-indigo-300 transition-all group shadow-sm">
+                              <div className="flex items-center justify-between mb-8">
+                                <div className="flex items-center gap-6">
+                                  <div className="w-12 h-12 bg-slate-50 text-slate-300 rounded-xl flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all duration-500">
+                                    <Lock size={20} />
+                                  </div>
+                                  <div>
+                                    <h5 className="text-lg font-black text-slate-900 group-hover:text-indigo-600 transition-colors">{p.policyname}</h5>
+                                    <div className="flex items-center gap-3 mt-1">
+                                      <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{p.cmd}</span>
+                                      <span className="w-1.5 h-1.5 bg-slate-200 rounded-full" />
+                                      <div className="flex items-center gap-1.5">
+                                        {roles.includes('authenticated') ? <Users size={12} className="text-indigo-400" /> : roles.includes('anon') ? <User size={12} className="text-slate-400" /> : <Globe size={12} className="text-emerald-400" />}
+                                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{roles.join(', ')}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                   <button onClick={() => openDuplicate(p)} title="Duplicate Policy" className="p-3 text-slate-200 hover:text-indigo-600 hover:bg-indigo-50 rounded-2xl transition-all">
+                                     <Copy size={20} />
+                                   </button>
+                                   <button onClick={() => handleEdit(p)} title="Edit Policy" className="p-3 text-slate-200 hover:text-indigo-600 hover:bg-indigo-50 rounded-2xl transition-all">
+                                     <Edit2 size={20} />
+                                   </button>
+                                   <button onClick={() => handleDelete(p.tablename, p.policyname)} title="Delete Policy" className="p-3 text-slate-200 hover:text-rose-600 hover:bg-rose-50 rounded-2xl transition-all">
+                                     <Trash2 size={20} />
+                                   </button>
+                                </div>
+                              </div>
+                              
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="bg-slate-50 rounded-2xl p-5 border border-slate-100 flex flex-col gap-2">
+                                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Eye size={12} /> Row Visibility</span>
+                                  <code className="text-[11px] font-mono text-slate-700 break-all">{p.qual || 'true'}</code>
+                                </div>
+                                <div className="bg-slate-50 rounded-2xl p-5 border border-slate-100 flex flex-col gap-2">
+                                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Edit2 size={12} /> Validation</span>
+                                  <code className="text-[11px] font-mono text-slate-700 break-all">{p.with_check || 'null'}</code>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                           <button onClick={() => handleDelete(p.tablename, p.policyname)} className="p-3 text-slate-200 hover:text-rose-600 hover:bg-rose-50 rounded-2xl transition-all">
-                             <Trash2 size={20} />
-                           </button>
-                        </div>
+                          );
+                        })}
                       </div>
-                      
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="bg-slate-50 rounded-3xl p-6 border border-slate-100 flex flex-col gap-2">
-                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Eye size={12} /> READ VISIBILITY (USING)</span>
-                          <code className="text-xs font-mono text-slate-700 break-all">{p.qual || 'true'}</code>
-                        </div>
-                        <div className="bg-slate-50 rounded-3xl p-6 border border-slate-100 flex flex-col gap-2">
-                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Edit2 size={12} /> WRITE VALIDATION (WITH CHECK)</span>
-                          <code className="text-xs font-mono text-slate-700 break-all">{p.with_check || 'null'}</code>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* POWERFUL NO-CODE POLICY BUILDER MODAL */}
+      {/* POLICY EDITOR MODAL */}
       {showModal && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-2xl z-[300] flex items-center justify-center p-8 overflow-y-auto animate-in fade-in duration-300">
           <div className="bg-white rounded-[4rem] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95 duration-500 border border-slate-200">
             <header className="p-12 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
               <div className="flex items-center gap-8">
                 <div className="w-16 h-16 bg-slate-900 rounded-[2rem] flex items-center justify-center text-white shadow-2xl">
-                  <Shield size={32} />
+                  {isEditing ? <Edit2 size={32} /> : <Shield size={32} />}
                 </div>
                 <div>
-                  <h3 className="text-4xl font-black text-slate-900 tracking-tighter">Policy Architect</h3>
-                  <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px] mt-1">Design isolated row access without SQL</p>
+                  <h3 className="text-4xl font-black text-slate-900 tracking-tighter">{isEditing ? 'Refine Policy' : 'Policy Architect'}</h3>
+                  <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px] mt-1">{isEditing ? `Modifying "${newPolicy.oldName}"` : 'Design isolated row access without SQL'}</p>
                 </div>
               </div>
               <button onClick={() => setShowModal(false)} className="p-4 hover:bg-slate-200 rounded-full transition-all text-slate-400 active:scale-90">
@@ -261,38 +378,39 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
 
             <div className="flex-1 overflow-y-auto p-12 flex flex-col lg:flex-row gap-12">
               <div className="flex-1 space-y-10">
-                {/* Section: Templates */}
-                <div className="space-y-4">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Accelerators (Templates)</label>
-                  <div className="grid grid-cols-2 gap-3">
-                    {[
-                      { id: 'read_all', label: 'Public Read', desc: 'Allow read access to everyone.' },
-                      { id: 'auth_all', label: 'Auth CRUD', desc: 'Full access to logged-in users.' },
-                      { id: 'user_own', label: 'Owner Only', desc: 'Users only see their own rows.' },
-                      { id: 'user_manage', label: 'Owner CRUD', desc: 'Full control over own data.' }
-                    ].map(tpl => (
-                      <button key={tpl.id} onClick={() => applyTemplate(tpl.id)} className="p-5 border border-slate-200 rounded-[1.8rem] text-left hover:border-indigo-600 hover:bg-indigo-50 transition-all flex flex-col gap-2 group active:scale-[0.98]">
-                        <span className="text-[11px] font-black text-slate-900 uppercase group-hover:text-indigo-600 transition-colors">{tpl.label}</span>
-                        <p className="text-[10px] text-slate-400 font-medium leading-tight">{tpl.desc}</p>
-                      </button>
-                    ))}
+                {!isEditing && (
+                  <div className="space-y-4">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Accelerators (Templates)</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      {[
+                        { id: 'read_all', label: 'Public Read', desc: 'Allow read access to everyone.' },
+                        { id: 'auth_all', label: 'Auth CRUD', desc: 'Full access to logged-in users.' },
+                        { id: 'user_own', label: 'Owner Only', desc: 'Users only see their own rows.' },
+                        { id: 'user_manage', label: 'Owner CRUD', desc: 'Full control over own data.' }
+                      ].map(tpl => (
+                        <button key={tpl.id} onClick={() => applyTemplate(tpl.id)} className="p-5 border border-slate-200 rounded-[1.8rem] text-left hover:border-indigo-600 hover:bg-indigo-50 transition-all flex flex-col gap-2 group active:scale-[0.98]">
+                          <span className="text-[11px] font-black text-slate-900 uppercase group-hover:text-indigo-600 transition-colors">{tpl.label}</span>
+                          <p className="text-[10px] text-slate-400 font-medium leading-tight">{tpl.desc}</p>
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
 
-                {/* Section: Basic Settings */}
                 <div className="grid grid-cols-2 gap-8">
                   <div className="space-y-3">
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Target Table</label>
                     <select 
                       value={newPolicy.table} 
                       onChange={(e) => setNewPolicy({ ...newPolicy, table: e.target.value })} 
-                      className="w-full bg-slate-100 border-none rounded-2xl py-5 px-6 text-sm font-black text-slate-900 outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all"
+                      disabled={isEditing}
+                      className={`w-full bg-slate-100 border-none rounded-2xl py-5 px-6 text-sm font-black text-slate-900 outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all ${isEditing ? 'opacity-50 cursor-not-allowed' : ''}`}
                     >
                       {tables.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
                     </select>
                   </div>
                   <div className="space-y-3">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Internal Alias</label>
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Policy Identity</label>
                     <input 
                       value={newPolicy.name} 
                       onChange={(e) => setNewPolicy({ ...newPolicy, name: e.target.value })} 
@@ -302,7 +420,6 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
                   </div>
                 </div>
 
-                {/* Section: Command & Role */}
                 <div className="grid grid-cols-2 gap-8">
                   <div className="space-y-3">
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Command Vector</label>
@@ -322,7 +439,6 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
                   </div>
                 </div>
 
-                {/* Section: Logical Expressions */}
                 <div className="space-y-6">
                   <div className="space-y-2">
                     <div className="flex justify-between items-center px-1">
@@ -367,7 +483,7 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
                   <div className="mt-4 pt-6 border-t border-white/10 flex flex-col gap-4">
                     <div className="p-4 bg-indigo-500/10 rounded-2xl border border-indigo-500/20">
                       <p className="text-[10px] text-indigo-300 font-bold leading-relaxed">
-                        <Zap size={10} className="inline mr-1 mb-1" /> RLS automatically injects these filters into every query reaching the table, even if the client doesn't explicitly add them.
+                        <Zap size={10} className="inline mr-1 mb-1" /> RLS automatically injects these filters into every query reaching the table.
                       </p>
                     </div>
                   </div>
@@ -376,15 +492,50 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
             </div>
 
             <footer className="p-12 border-t border-slate-100 bg-slate-50/50 flex gap-6">
-              <button onClick={() => setShowModal(false)} className="flex-1 py-7 text-slate-400 font-black uppercase tracking-widest text-xs hover:bg-slate-100 rounded-3xl transition-all">Abort Design</button>
+              <button onClick={() => setShowModal(false)} className="flex-1 py-7 text-slate-400 font-black uppercase tracking-widest text-xs hover:bg-slate-100 rounded-3xl transition-all">Abort</button>
               <button 
-                onClick={handleCreate} 
+                onClick={handleCreateOrUpdate} 
                 disabled={executing || !newPolicy.name} 
                 className="flex-[3] py-7 bg-indigo-600 text-white font-black rounded-[2.2rem] shadow-2xl shadow-indigo-200 uppercase tracking-[0.2em] text-xs flex items-center justify-center gap-4 hover:bg-indigo-700 transition-all active:scale-95 disabled:opacity-50"
               >
-                {executing ? <Loader2 size={18} className="animate-spin" /> : <><CheckCircle2 size={18} /> COMMIT SECURITY PLAN</>}
+                {executing ? <Loader2 size={18} className="animate-spin" /> : <><CheckCircle2 size={18} /> {isEditing ? 'UPDATE SECURITY PLAN' : 'COMMIT SECURITY PLAN'}</>}
               </button>
             </footer>
+          </div>
+        </div>
+      )}
+
+      {/* DUPLICATE POLICY MODAL */}
+      {showDuplicateModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-2xl z-[350] flex items-center justify-center p-8 animate-in fade-in duration-300">
+          <div className="bg-white rounded-[3.5rem] w-full max-w-lg p-12 shadow-2xl animate-in zoom-in-95 border border-slate-200">
+            <div className="w-20 h-20 bg-indigo-50 text-indigo-600 rounded-[2rem] flex items-center justify-center mb-8 shadow-inner">
+              <Copy size={32} />
+            </div>
+            <h3 className="text-3xl font-black text-slate-900 tracking-tighter mb-4">Duplicate Policy</h3>
+            <p className="text-slate-500 mb-10 font-medium">Clone the security logic of "{selectedPolicyToDuplicate?.policyname}" to another table.</p>
+            
+            <div className="space-y-3 mb-10">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Target Table</label>
+              <select 
+                value={duplicateTargetTable} 
+                onChange={(e) => setDuplicateTargetTable(e.target.value)}
+                className="w-full bg-slate-100 border-none rounded-2xl py-5 px-6 text-sm font-black text-slate-900 outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all"
+              >
+                {tables.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
+              </select>
+            </div>
+
+            <div className="flex gap-4">
+              <button onClick={() => setShowDuplicateModal(false)} className="flex-1 py-6 text-slate-400 font-black uppercase tracking-widest text-xs">Cancel</button>
+              <button 
+                onClick={handleDuplicate} 
+                disabled={executing}
+                className="flex-[2] py-6 bg-indigo-600 text-white font-black rounded-[2rem] shadow-xl uppercase tracking-widest text-xs flex items-center justify-center gap-3 active:scale-95"
+              >
+                {executing ? <Loader2 size={18} className="animate-spin" /> : 'Confirm Clone'}
+              </button>
+            </div>
           </div>
         </div>
       )}
