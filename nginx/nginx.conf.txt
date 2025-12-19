@@ -24,8 +24,10 @@ http {
         listen [::]:80;
         server_name _; 
 
-        # Frontend
+        # Frontend Management Studio
         location / {
+            # Se for uma rota de API vinda de um domínio customizado, tenta encaminhar ao data plane
+            # Caso contrário, serve o Studio
             proxy_pass http://frontend:80;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
@@ -33,7 +35,16 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        # Control Plane (Auth e Projetos) - Removido o "/" final do proxy_pass
+        # Encaminhamento direto de rotas de dados (suporte a domínios customizados)
+        location ~ ^/(rpc|tables|auth|storage|realtime)/ {
+            proxy_pass http://backend_data:3000;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # Control Plane (Auth e Projetos do Sistema)
         location /api/control/ {
             proxy_pass http://backend_control:3000;
             proxy_set_header Host $host;
@@ -42,7 +53,7 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        # Data Plane (Query e Multi-tenancy) - Removido o "/" final do proxy_pass
+        # Data Plane (Acesso via /api/data/:slug)
         location /api/data/ {
             proxy_pass http://backend_data:3000;
             proxy_set_header Host $host;

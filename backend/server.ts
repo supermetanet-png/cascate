@@ -78,6 +78,17 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
 
 app.use(resolveProject as any);
 
+// Middleware para suportar domínios customizados (sem prefixo /api/data/:slug)
+const customDomainRewriter = (req: any, res: any, next: NextFunction) => {
+  if (req.project && !req.url.startsWith('/api/data/') && !req.url.startsWith('/api/control/')) {
+    // Reescreve a URL internamente para bater com as rotas que esperam o prefixo
+    req.url = `/api/data/${req.project.slug}${req.url}`;
+  }
+  next();
+};
+
+app.use(customDomainRewriter as any);
+
 const cascataAuth = async (req: any, res: any, next: NextFunction) => {
   if (req.path.includes('/control/')) {
     const authHeader = req.headers['authorization'];

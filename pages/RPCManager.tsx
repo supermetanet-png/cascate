@@ -247,9 +247,10 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   const copyCurl = () => {
     if (!selectedAsset || !projectData) return;
     
-    // Calcula o endpoint final baseado na configuração de domínio
+    // Detecta o protocolo atual para gerar o cURL correto (evita forçar HTTPS se não estiver disponível)
+    const protocol = window.location.protocol;
     const endpoint = projectData.custom_domain 
-      ? `https://${projectData.custom_domain}/rpc/${selectedAsset.name}`
+      ? `${protocol}//${projectData.custom_domain}/rpc/${selectedAsset.name}`
       : `${window.location.origin}/api/data/${projectId}/rpc/${selectedAsset.name}`;
 
     const curl = `curl -X POST ${endpoint} \\
