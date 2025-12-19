@@ -340,7 +340,6 @@ const validateGovernance = (req: any, fileName: string, fileSize: number) => {
   }
 
   const policy = matchedSector || governance.global || { max_size: '100MB', allowed_exts: [] };
-  
   const parseSize = (s: string) => {
     const num = parseFloat(s);
     if (s.includes('TB')) return num * 1024 * 1024 * 1024 * 1024;
@@ -353,10 +352,10 @@ const validateGovernance = (req: any, fileName: string, fileSize: number) => {
   const maxBytes = parseSize(policy.max_size);
 
   if (matchedSector && !policy.allowed_exts?.includes(ext)) {
-    return { allowed: false, error: `Extensão .${ext} desabilitada pela política de governança.` };
+    return { allowed: false, error: `Governança: A extensão .${ext} não é permitida para este setor.` };
   }
   if (fileSize > maxBytes) {
-    return { allowed: false, error: `Tamanho excede o limite de ${policy.max_size} para este setor.` };
+    return { allowed: false, error: `Governança: Arquivo muito pesado. Limite para este setor é ${policy.max_size}.` };
   }
   return { allowed: true };
 };
@@ -428,6 +427,37 @@ app.post('/api/data/:slug/storage/:bucket/duplicate', cascataAuth as any, async 
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// Upload com Governança Unificada
+app.post('/api/data/:slug/storage/:bucket/upload', cascataAuth as any, upload.single('file') as any, async (req: any, res: any) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+
+  const validation = validateGovernance(req, req.file.originalname, req.file.size);
+  if (!validation.allowed) {
+    fs.unlinkSync(req.file.path);
+    return res.status(400).json({ error: validation.error });
+  }
+
+  const targetPath = req.body.path || '';
+  const dest = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, targetPath, req.file.originalname);
+  if (!fs.existsSync(path.dirname(dest))) fs.mkdirSync(path.dirname(dest), { recursive: true });
+  
+  fs.renameSync(req.file.path, dest);
+  res.json({ success: true });
+});
+
+// Mover Objeto
+app.patch('/api/data/:slug/storage/:bucket/object', cascataAuth as any, async (req: any, res: any) => {
+  const { oldPath, newPath } = req.body;
+  const oldFull = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, oldPath);
+  const newFull = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, newPath);
+  
+  if (fs.existsSync(oldFull)) {
+    if (!fs.existsSync(path.dirname(newFull))) fs.mkdirSync(path.dirname(newFull), { recursive: true });
+    fs.renameSync(oldFull, newFull);
+    res.json({ success: true });
+  } else res.status(404).json({ error: 'Not found' });
+});
+
 // Renomear (Arquivo ou Pasta)
 app.patch('/api/data/:slug/storage/:bucket/rename', cascataAuth as any, async (req: any, res: any) => {
   const { oldPath, newName } = req.body;
@@ -463,37 +493,6 @@ app.post('/api/data/:slug/storage/policies', cascataAuth as any, async (req: any
   
   await systemPool.query('UPDATE system.projects SET metadata = $1 WHERE slug = $2', [JSON.stringify(metadata), req.params.slug]);
   res.json({ success: true });
-});
-
-// Upload com Governança Unificada
-app.post('/api/data/:slug/storage/:bucket/upload', cascataAuth as any, upload.single('file') as any, async (req: any, res: any) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
-
-  const validation = validateGovernance(req, req.file.originalname, req.file.size);
-  if (!validation.allowed) {
-    fs.unlinkSync(req.file.path);
-    return res.status(400).json({ error: validation.error });
-  }
-
-  const targetPath = req.body.path || '';
-  const dest = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, targetPath, req.file.originalname);
-  if (!fs.existsSync(path.dirname(dest))) fs.mkdirSync(path.dirname(dest), { recursive: true });
-  
-  fs.renameSync(req.file.path, dest);
-  res.json({ success: true, name: req.file.originalname });
-});
-
-// Mover Objeto
-app.patch('/api/data/:slug/storage/:bucket/object', cascataAuth as any, async (req: any, res: any) => {
-  const { oldPath, newPath } = req.body;
-  const oldFull = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, oldPath);
-  const newFull = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, newPath);
-  
-  if (fs.existsSync(oldFull)) {
-    if (!fs.existsSync(path.dirname(newFull))) fs.mkdirSync(path.dirname(newFull), { recursive: true });
-    fs.renameSync(oldFull, newFull);
-    res.json({ success: true });
-  } else res.status(404).json({ error: 'Not found' });
 });
 
 // Deletar
@@ -661,4 +660,4 @@ app.get('/api/data/:slug/logs', cascataAuth as any, async (req: any, res: any) =
   res.json(result.rows);
 });
 
-app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.3 Governance-Aware Storage na porta ${PORT}`));
+app.listen(PORT, () => console.log(`[CASCATA STORAGE MASTER] Online on ${PORT}`));
