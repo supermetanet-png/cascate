@@ -373,31 +373,43 @@ app.post('/api/data/:slug/storage/:bucket/folder', cascataAuth as any, async (re
 app.post('/api/data/:slug/storage/:bucket/upload', cascataAuth as any, upload.single('file') as any, async (req: any, res: any) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
 
-  // Lógica de Limites (Simulando configuração dinâmica via metadata do projeto)
-  const limits = req.project.metadata?.storage_limits || {
-    global: 100 * 1024 * 1024, // 100MB Default
-    images: 10 * 1024 * 1024,  // 10MB Images
-    videos: 500 * 1024 * 1024, // 500MB Videos
-    text: 2 * 1024 * 1024      // 2MB Text
-  };
-
-  const ext = path.extname(req.file.originalname).toLowerCase();
+  // Governança de Storage Refinada
+  const governance = req.project.metadata?.storage_governance;
+  const ext = path.extname(req.file.originalname).toLowerCase().replace('.', '');
   const size = req.file.size;
-  let allowed = true;
 
-  if (['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'].includes(ext)) {
-    if (size > limits.images) allowed = false;
-  } else if (['.mp4', '.mov', '.avi', '.mkv'].includes(ext)) {
-    if (size > limits.videos) allowed = false;
-  } else if (['.txt', '.csv', '.json', '.pdf'].includes(ext)) {
-    if (size > limits.text) allowed = false;
-  } else if (size > limits.global) {
-    allowed = false;
-  }
+  if (governance) {
+    let matchedSector: any = null;
+    for (const [sectorId, config] of Object.entries(governance) as any) {
+      if (sectorId !== 'global' && config.allowed_exts?.includes(ext)) {
+        matchedSector = config;
+        break;
+      }
+    }
 
-  if (!allowed) {
-    fs.unlinkSync(req.file.path);
-    return res.status(400).json({ error: `File size exceeds category limit for ${ext}` });
+    const policy = matchedSector || governance.global || { max_size: '100MB', allowed_exts: [] };
+    
+    // Converter human-readable size para bytes
+    const parseSize = (s: string) => {
+      const num = parseFloat(s);
+      if (s.includes('GB')) return num * 1024 * 1024 * 1024;
+      if (s.includes('MB')) return num * 1024 * 1024;
+      if (s.includes('KB')) return num * 1024;
+      return num;
+    };
+
+    const maxBytes = parseSize(policy.max_size);
+
+    // Validação estrita
+    if (matchedSector && !policy.allowed_exts?.includes(ext)) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: `O formato .${ext} foi desabilitado para este setor.` });
+    }
+
+    if (size > maxBytes) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: `O arquivo excede o limite de ${policy.max_size} definido na política.` });
+    }
   }
 
   const targetPath = req.body.path || '';
@@ -584,4 +596,4 @@ app.get('/api/data/:slug/logs', cascataAuth as any, async (req: any, res: any) =
   res.json(result.rows);
 });
 
-app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.2 Storage/Auth Optimized na porta ${PORT}`));
+app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.3 Governance-Aware Storage na porta ${PORT}`));
