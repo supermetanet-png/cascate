@@ -41,17 +41,18 @@ const auditLogger = async (req: any, res: any, next: NextFunction) => {
   const start = Date.now();
   const oldJson = res.json;
 
-  // Intercepta a resposta para registrar o status e corpo se necessário
   res.json = function(data: any) {
     const duration = Date.now() - start;
     const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     
+    // Detecta se a requisição é interna do Studio (Referer corresponde ao Host)
+    const isInternal = req.headers.referer?.includes(req.headers.host || '') || false;
+
     if (req.project) {
-      // Registrar log de forma assíncrona (não bloqueante)
       systemPool.query(
         `INSERT INTO system.api_logs 
-        (project_slug, method, path, status_code, client_ip, duration_ms, user_role, payload, headers, user_agent) 
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        (project_slug, method, path, status_code, client_ip, duration_ms, user_role, payload, headers, user_agent, geo_info) 
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           req.project.slug, 
           req.method, 
@@ -66,7 +67,8 @@ const auditLogger = async (req: any, res: any, next: NextFunction) => {
             origin: req.headers.origin,
             host: req.headers.host 
           }),
-          req.headers['user-agent']
+          req.headers['user-agent'],
+          JSON.stringify({ is_internal: isInternal }) // Armazena flag interna
         ]
       ).catch(e => console.error('Logging failed', e));
     }
@@ -104,7 +106,6 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
   }
 };
 
-// Aplicação de middlewares na ordem correta
 app.use(resolveProject as any);
 app.use(firewall as any);
 app.use(auditLogger as any);
@@ -147,6 +148,13 @@ const cascataAuth = async (req: any, res: any, next: NextFunction) => {
 
 // --- CONTROL PLANE EXTENSIONS ---
 
+// Helper para descobrir IP atual do usuário
+app.get('/api/control/me/ip', (req: Request, res: Response) => {
+  // Fix: Access socket property through any casting to bypass TypeScript error if not correctly typed in the environment
+  const ip = req.headers['x-forwarded-for'] || (req as any).socket?.remoteAddress;
+  res.json({ ip });
+});
+
 // Bloquear IP
 app.post('/api/control/projects/:slug/block-ip', cascataAuth as any, async (req, res) => {
   const { ip } = req.body;
@@ -185,7 +193,7 @@ app.patch('/api/control/projects/:slug/settings', cascataAuth as any, async (req
   res.json({ success: true });
 });
 
-// --- RESTO DAS ROTAS EXISTENTES ---
+// --- AUTH E PROJETOS ---
 
 app.post('/api/control/auth/login', async (req, res) => {
   const { email, password } = req.body;

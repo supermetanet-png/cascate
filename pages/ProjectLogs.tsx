@@ -5,36 +5,38 @@ import {
   ChevronRight, Circle, Clock, Database, Globe, Loader2,
   Search, ShieldAlert, Trash2, Download, X, Eye, 
   Settings2, Calendar, Lock, Globe2, Cpu, ArrowRight,
-  // Added missing icon imports
-  CheckCircle2, Code
+  CheckCircle2, Code, ShieldCheck, EyeOff, AlertTriangle
 } from 'lucide-react';
 
 const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [logs, setLogs] = useState<any[]>([]);
   const [project, setProject] = useState<any>(null);
+  const [currentUserIp, setCurrentUserIp] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedLog, setSelectedLog] = useState<any>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [hideInternal, setHideInternal] = useState(true);
   const [executing, setExecuting] = useState(false);
   const [success, setSuccess] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [logsRes, projectsRes] = await Promise.all([
-        fetch(`/api/data/${projectId}/logs`, {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('cascata_token')}` }
-        }),
-        fetch('/api/control/projects', {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('cascata_token')}` }
-        })
+      const token = localStorage.getItem('cascata_token');
+      const [logsRes, projectsRes, ipRes] = await Promise.all([
+        fetch(`/api/data/${projectId}/logs`, { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/control/projects', { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch('/api/control/me/ip', { headers: { 'Authorization': `Bearer ${token}` } })
       ]);
       
       const logsData = await logsRes.json();
       const projectsData = await projectsRes.json();
+      const ipData = await ipRes.json();
       
       setLogs(Array.isArray(logsData) ? logsData : []);
       setProject(projectsData.find((p: any) => p.slug === projectId));
+      setCurrentUserIp(ipData.ip);
     } catch (err) {
       console.error('Telemetria offline');
     } finally {
@@ -44,11 +46,24 @@ const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const handleBlockIp = async (ip: string) => {
-    if (!confirm(`Confirmar bloqueio do IP ${ip}? Ele perderá acesso imediato a todas as APIs deste projeto.`)) return;
+  const handleBlockIp = async (ip: string, isInternal: boolean) => {
+    // PROTEÇÃO CRÍTICA: Bloqueia tentativa de bloquear o próprio servidor ou o IP do operador atual
+    const isSelfBlocking = ip === currentUserIp;
+    
+    if (isInternal) {
+      alert("Operação Abortada: Este IP pertence à infraestrutura interna da Cascata e não pode ser bloqueado para garantir a integridade do Studio.");
+      return;
+    }
+
+    if (isSelfBlocking) {
+      if (!confirm(`ALERTA DE SEGURANÇA: O IP ${ip} corresponde ao SEU IP ATUAL. Se você bloquear este IP, perderá acesso imediato ao painel e a todas as APIs. Deseja realmente prosseguir com este auto-bloqueio?`)) return;
+    } else {
+      if (!confirm(`Confirmar bloqueio do IP ${ip}? Ele perderá acesso imediato a todas as APIs deste projeto.`)) return;
+    }
+
     setExecuting(true);
     try {
-      await fetch(`/api/control/projects/${projectId}/block-ip`, {
+      const response = await fetch(`/api/control/projects/${projectId}/block-ip`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -56,11 +71,14 @@ const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
         },
         body: JSON.stringify({ ip })
       });
-      setSuccess(`IP ${ip} bloqueado.`);
-      fetchData();
-      setTimeout(() => setSuccess(null), 3000);
+      if (response.ok) {
+        setSuccess(`IP ${ip} bloqueado.`);
+        fetchData();
+        setTimeout(() => setSuccess(null), 3000);
+      }
     } catch (e) {
-      alert("Erro ao bloquear");
+      setError("Erro ao bloquear IP.");
+      setTimeout(() => setError(null), 3000);
     } finally {
       setExecuting(false);
     }
@@ -94,6 +112,10 @@ const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
     link.click();
   };
 
+  const filteredLogs = hideInternal 
+    ? logs.filter(l => !l.geo_info?.is_internal) 
+    : logs;
+
   return (
     <div className="flex h-full flex-col bg-[#F8FAFC] overflow-hidden">
       {/* Notifications */}
@@ -101,6 +123,12 @@ const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
         <div className="fixed top-8 left-1/2 -translate-x-1/2 z-[600] bg-indigo-600 text-white px-8 py-4 rounded-[2rem] shadow-2xl animate-bounce flex items-center gap-3">
           <CheckCircle2 size={18} />
           <span className="text-xs font-black uppercase tracking-widest">{success}</span>
+        </div>
+      )}
+      {error && (
+        <div className="fixed top-8 left-1/2 -translate-x-1/2 z-[600] bg-rose-600 text-white px-8 py-4 rounded-[2rem] shadow-2xl animate-pulse flex items-center gap-3">
+          <AlertTriangle size={18} />
+          <span className="text-xs font-black uppercase tracking-widest">{error}</span>
         </div>
       )}
 
@@ -117,6 +145,15 @@ const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
         
         <div className="flex items-center gap-4">
           <div className="flex items-center bg-slate-100 p-1.5 rounded-2xl">
+             <button 
+                onClick={() => setHideInternal(!hideInternal)} 
+                className={`p-3 transition-all rounded-xl flex items-center gap-2 text-[10px] font-black uppercase tracking-widest ${hideInternal ? 'text-slate-400' : 'bg-white shadow-sm text-indigo-600'}`}
+                title={hideInternal ? "Mostrar Tráfego Interno" : "Ocultar Tráfego Interno"}
+              >
+                {hideInternal ? <EyeOff size={18} /> : <Eye size={18} />}
+                {hideInternal ? 'INTERNAL HIDDEN' : 'INTERNAL VISIBLE'}
+             </button>
+             <div className="w-[1px] h-6 bg-slate-200 mx-1"></div>
              <button onClick={() => fetchData()} className="p-3 text-slate-500 hover:text-indigo-600 transition-all"><RefreshCw size={20} className={loading ? 'animate-spin' : ''} /></button>
              <button onClick={handleExportLogs} className="p-3 text-slate-500 hover:text-indigo-600 transition-all"><Download size={20} /></button>
              <button onClick={() => setShowSettings(true)} className="p-3 text-slate-500 hover:text-indigo-600 transition-all"><Settings2 size={20} /></button>
@@ -138,51 +175,57 @@ const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {logs.length === 0 && !loading ? (
+                {filteredLogs.length === 0 && !loading ? (
                   <tr>
                     <td colSpan={5} className="py-40 text-center">
                       <Terminal size={64} className="mx-auto text-slate-100 mb-6" />
                       <p className="text-sm font-black text-slate-300 uppercase tracking-widest">Awaiting first request...</p>
                     </td>
                   </tr>
-                ) : logs.map((log) => (
-                  <tr 
-                    key={log.id} 
-                    onClick={() => setSelectedLog(log)}
-                    className={`hover:bg-indigo-50/30 transition-all cursor-pointer group ${selectedLog?.id === log.id ? 'bg-indigo-50' : ''}`}
-                  >
-                    <td className="px-8 py-5">
-                      <div className="flex flex-col">
-                        <span className="text-xs font-bold text-slate-900">{new Date(log.created_at).toLocaleTimeString()}</span>
-                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-tight">{new Date(log.created_at).toLocaleDateString()}</span>
-                      </div>
-                    </td>
-                    <td className="px-8 py-5">
-                      <div className="flex items-center gap-3">
-                        <span className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase ${log.method === 'GET' ? 'bg-emerald-50 text-emerald-600' : 'bg-indigo-50 text-indigo-600'}`}>
-                          {log.method}
+                ) : filteredLogs.map((log) => {
+                  const isInternal = log.geo_info?.is_internal;
+                  return (
+                    <tr 
+                      key={log.id} 
+                      onClick={() => setSelectedLog(log)}
+                      className={`hover:bg-indigo-50/30 transition-all cursor-pointer group ${selectedLog?.id === log.id ? 'bg-indigo-50' : ''} ${isInternal ? 'opacity-60' : ''}`}
+                    >
+                      <td className="px-8 py-5">
+                        <div className="flex flex-col">
+                          <span className="text-xs font-bold text-slate-900">{new Date(log.created_at).toLocaleTimeString()}</span>
+                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-tight">{new Date(log.created_at).toLocaleDateString()}</span>
+                        </div>
+                      </td>
+                      <td className="px-8 py-5">
+                        <div className="flex items-center gap-3">
+                          <span className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase ${log.method === 'GET' ? 'bg-emerald-50 text-emerald-600' : 'bg-indigo-50 text-indigo-600'}`}>
+                            {log.method}
+                          </span>
+                          <div className="flex flex-col">
+                            <code className="text-sm font-mono font-bold text-slate-600 truncate max-w-[200px]">{log.path}</code>
+                            {isInternal && <span className="text-[8px] font-black text-indigo-400 uppercase tracking-widest flex items-center gap-1"><ShieldCheck size={8} /> STUDIO INTERNAL</span>}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-8 py-5 text-center">
+                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-50 px-3 py-1 rounded-full border border-slate-100">
+                          {log.user_role}
                         </span>
-                        <code className="text-sm font-mono font-bold text-slate-600 truncate max-w-[200px]">{log.path}</code>
-                      </div>
-                    </td>
-                    <td className="px-8 py-5 text-center">
-                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-50 px-3 py-1 rounded-full border border-slate-100">
-                        {log.user_role}
-                      </span>
-                    </td>
-                    <td className="px-8 py-5 text-center">
-                      <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border ${log.status_code >= 400 ? 'bg-rose-50 text-rose-600 border-rose-100' : 'bg-emerald-50 text-emerald-600 border-emerald-100'}`}>
-                        <Circle size={8} className={log.status_code >= 400 ? 'fill-rose-500' : 'fill-emerald-500'} />
-                        <span className="font-black text-xs">{log.status_code}</span>
-                      </div>
-                    </td>
-                    <td className="px-8 py-5 text-right">
-                       <span className={`text-xs font-mono font-black ${log.duration_ms > 100 ? 'text-amber-500' : 'text-emerald-500'}`}>
-                         {log.duration_ms}ms
-                       </span>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="px-8 py-5 text-center">
+                        <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border ${log.status_code >= 400 ? 'bg-rose-50 text-rose-600 border-rose-100' : 'bg-emerald-50 text-emerald-600 border-emerald-100'}`}>
+                          <Circle size={8} className={log.status_code >= 400 ? 'fill-rose-500' : 'fill-emerald-500'} />
+                          <span className="font-black text-xs">{log.status_code}</span>
+                        </div>
+                      </td>
+                      <td className="px-8 py-5 text-right">
+                         <span className={`text-xs font-mono font-black ${log.duration_ms > 100 ? 'text-amber-500' : 'text-emerald-500'}`}>
+                           {log.duration_ms}ms
+                         </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -205,19 +248,31 @@ const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
             </header>
 
             <div className="p-10 space-y-10">
-              {/* Security Block Action */}
-              <div className="bg-rose-600 rounded-[2.5rem] p-8 text-white relative overflow-hidden group">
+              {/* Security Block Action with Intelligence */}
+              <div className={`rounded-[2.5rem] p-8 text-white relative overflow-hidden group ${selectedLog.geo_info?.is_internal ? 'bg-slate-900' : 'bg-rose-600'}`}>
                 <ShieldAlert className="absolute -bottom-4 -right-4 w-32 h-32 opacity-10 group-hover:scale-125 transition-transform" />
                 <h4 className="font-black uppercase text-xs tracking-widest mb-1">Source Governance</h4>
-                <p className="text-[10px] text-rose-200 mb-6 font-medium">IP: {selectedLog.client_ip}</p>
+                <p className="text-[10px] font-medium opacity-80 mb-6 flex items-center gap-2">
+                  IP: {selectedLog.client_ip} 
+                  {selectedLog.client_ip === currentUserIp && <span className="bg-white/20 px-2 py-0.5 rounded-lg border border-white/10">(SEU IP ATUAL)</span>}
+                </p>
+                
                 <button 
-                  onClick={() => handleBlockIp(selectedLog.client_ip)}
-                  disabled={project?.blocklist?.includes(selectedLog.client_ip)}
-                  className="w-full bg-white text-rose-600 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-3 shadow-2xl hover:bg-rose-50 transition-all active:scale-95 disabled:opacity-50"
+                  onClick={() => handleBlockIp(selectedLog.client_ip, selectedLog.geo_info?.is_internal)}
+                  disabled={project?.blocklist?.includes(selectedLog.client_ip) || selectedLog.geo_info?.is_internal}
+                  className="w-full bg-white text-slate-900 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-3 shadow-2xl hover:bg-slate-50 transition-all active:scale-95 disabled:opacity-50"
                 >
-                  {project?.blocklist?.includes(selectedLog.client_ip) ? <Lock size={14}/> : <ShieldAlert size={14}/>} 
-                  {project?.blocklist?.includes(selectedLog.client_ip) ? 'ESTE IP JÁ ESTÁ BLOQUEADO' : 'BLOQUEAR IP IMEDIATAMENTE'}
+                  {selectedLog.geo_info?.is_internal ? (
+                    <><Lock size={14}/> IP INTERNO PROTEGIDO</>
+                  ) : project?.blocklist?.includes(selectedLog.client_ip) ? (
+                    <><Lock size={14}/> IP JÁ BLOQUEADO</>
+                  ) : (
+                    <><ShieldAlert size={14} className="text-rose-600"/> BLOQUEAR ORIGEM</>
+                  )}
                 </button>
+                {selectedLog.client_ip === currentUserIp && !selectedLog.geo_info?.is_internal && (
+                  <p className="mt-4 text-[9px] font-black text-rose-200 leading-tight text-center uppercase tracking-widest">CUIDADO: BLOQUEAR SEU PRÓPRIO IP INTERROMPERÁ SEU ACESSO.</p>
+                )}
               </div>
 
               {/* Rich Metadata Sections */}
