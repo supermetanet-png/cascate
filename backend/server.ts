@@ -19,7 +19,8 @@ const { Pool } = pg;
 const systemPool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL });
 const PORT = process.env.PORT || 3000;
 
-const STORAGE_ROOT = path.join(process.cwd(), 'storage');
+// Fixed process.cwd() type error by using path.resolve instead of calling process.cwd() explicitly
+const STORAGE_ROOT = path.resolve('storage');
 if (!fs.existsSync(STORAGE_ROOT)) fs.mkdirSync(STORAGE_ROOT, { recursive: true });
 
 const upload = multer({ dest: 'uploads/' });
@@ -172,6 +173,20 @@ app.post('/api/control/projects/:slug/rotate-keys', cascataAuth as any, async (r
   const column = type === 'anon' ? 'anon_key' : type === 'service' ? 'service_key' : 'jwt_secret';
   await systemPool.query(`UPDATE system.projects SET ${column} = $1 WHERE slug = $2`, [newKey, req.params.slug]);
   res.json({ success: true, newKey });
+});
+
+app.get('/api/control/projects/:slug/webhooks', cascataAuth as any, async (req, res) => {
+  const result = await systemPool.query('SELECT * FROM system.webhooks WHERE project_slug = $1 ORDER BY created_at DESC', [req.params.slug]);
+  res.json(result.rows);
+});
+
+app.post('/api/control/projects/:slug/webhooks', cascataAuth as any, async (req, res) => {
+  const { target_url, event_type, table_name } = req.body;
+  const result = await systemPool.query(
+    'INSERT INTO system.webhooks (project_slug, target_url, event_type, table_name) VALUES ($1, $2, $3, $4) RETURNING *',
+    [req.params.slug, target_url, event_type, table_name]
+  );
+  res.json(result.rows[0]);
 });
 
 // --- DATA PLANE - RLS & POLICIES ---

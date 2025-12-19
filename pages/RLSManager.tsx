@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Shield, Lock, Unlock, Plus, Trash2, Edit2, AlertCircle, Loader2, X, Terminal, CheckCircle2, Zap, User, Users, Globe, Eye, Code, ChevronDown, ChevronRight, Copy } from 'lucide-react';
 
@@ -274,7 +275,8 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
               </div>
             ) : (
               <div className="space-y-10 pb-20">
-                {Object.entries(groupedPolicies).map(([tableName, tablePolicies]) => (
+                {/* Fixed type errors by casting Object.entries to [string, any[]][] to avoid unknown inference */}
+                {(Object.entries(groupedPolicies) as [string, any[]][]).map(([tableName, tablePolicies]) => (
                   <div key={tableName} className="bg-white border border-slate-200 rounded-[3rem] overflow-hidden shadow-sm hover:shadow-xl hover:shadow-slate-200/50 transition-all duration-500">
                     {/* Table Header */}
                     <button 
