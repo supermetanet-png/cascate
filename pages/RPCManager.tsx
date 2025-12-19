@@ -247,7 +247,7 @@ const RPCManager: React.FC<{ projectId: string }> = ({ projectId }) => {
   const copyCurl = () => {
     if (!selectedAsset || !projectData) return;
     
-    // Fix: Dinamicamente detecta o protocolo (http vs https)
+    // Detecta o protocolo atual para gerar o cURL correto (evita forçar HTTPS se não estiver disponível)
     const protocol = window.location.protocol;
     const endpoint = projectData.custom_domain 
       ? `${protocol}//${projectData.custom_domain}/rpc/${selectedAsset.name}`
