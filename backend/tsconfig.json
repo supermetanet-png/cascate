@@ -6,11 +6,10 @@
     "moduleResolution": "node",
     "outDir": "./dist",
     "rootDir": "./",
-    "strict": false,
+    "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "allowJs": true
+    "forceConsistentCasingInFileNames": true
   },
   "include": ["**/*.ts"]
 }
