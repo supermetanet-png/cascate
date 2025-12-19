@@ -44,7 +44,7 @@ const SystemSettings: React.FC = () => {
         body: JSON.stringify({ key: 'global_domain', value: globalDomain })
       });
       if (!response.ok) throw new Error('Falha ao salvar configuração.');
-      setSuccess('Propagação de domínio iniciada. Acesso IP será bloqueado.');
+      setSuccess('Configurações de domínio propagadas.');
       setCurrentDomain(globalDomain);
       setTimeout(() => setSuccess(null), 3000);
     } catch (err: any) { setError(err.message); }
@@ -98,10 +98,15 @@ const SystemSettings: React.FC = () => {
               <input 
                 value={globalDomain} 
                 onChange={(e) => setGlobalDomain(e.target.value)} 
-                placeholder="studio.seu-dominio.com"
+                placeholder="studio.meu-dominio.com"
                 className="w-full bg-slate-50 border border-slate-100 rounded-2xl py-5 px-8 text-lg font-mono font-black text-indigo-600 outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all" 
               />
-              <p className="text-[10px] text-slate-400 font-bold px-2 mt-4 uppercase">Status: {currentDomain ? <span className="text-emerald-500">Locked to {currentDomain}</span> : <span className="text-amber-500">Acesso por IP Ativo (Não Recomendado)</span>}</p>
+              <div className="flex items-center gap-2 mt-4 px-2">
+                 <div className={`w-2 h-2 rounded-full ${currentDomain ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`}></div>
+                 <p className="text-[10px] text-slate-400 font-black uppercase">
+                   Status: {currentDomain ? `Travado em ${currentDomain}` : 'Acesso via IP Permitido (Configuração Inicial)'}
+                 </p>
+              </div>
             </div>
             
             <div className="flex gap-4">
@@ -110,7 +115,7 @@ const SystemSettings: React.FC = () => {
                 disabled={loading || !globalDomain || globalDomain === currentDomain}
                 className="flex-[2] bg-slate-900 text-white py-6 rounded-[2rem] font-black uppercase tracking-widest text-xs flex items-center justify-center gap-3 hover:bg-indigo-600 transition-all shadow-xl disabled:opacity-30"
               >
-                {loading ? <Loader2 className="animate-spin" size={16} /> : 'Fixar Domínio'}
+                {loading ? <Loader2 className="animate-spin" size={16} /> : 'Salvar Domínio'}
               </button>
               
               {currentDomain && (
@@ -118,7 +123,7 @@ const SystemSettings: React.FC = () => {
                   onClick={() => alert('Provisionando SSL via Certbot...')}
                   className="flex-1 bg-emerald-500 text-white py-6 rounded-[2rem] font-black uppercase tracking-widest text-xs flex items-center justify-center gap-3 hover:bg-emerald-600 transition-all shadow-xl"
                 >
-                  <CloudLightning size={16} /> Gerar SSL
+                  <CloudLightning size={16} /> SSL
                 </button>
               )}
             </div>
