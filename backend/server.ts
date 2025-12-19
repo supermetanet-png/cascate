@@ -323,6 +323,44 @@ app.post('/api/control/projects/:slug/webhooks', cascataAuth as any, async (req,
   res.json(result.rows[0]);
 });
 
+// --- STORAGE ENGINE CORE ---
+
+const validateGovernance = (req: any, fileName: string, fileSize: number) => {
+  const governance = req.project.metadata?.storage_governance;
+  if (!governance) return { allowed: true };
+
+  const ext = path.extname(fileName).toLowerCase().replace('.', '');
+  let matchedSector: any = null;
+  
+  for (const [sectorId, config] of Object.entries(governance) as any) {
+    if (sectorId !== 'global' && config.allowed_exts?.includes(ext)) {
+      matchedSector = config;
+      break;
+    }
+  }
+
+  const policy = matchedSector || governance.global || { max_size: '100MB', allowed_exts: [] };
+  
+  const parseSize = (s: string) => {
+    const num = parseFloat(s);
+    if (s.includes('TB')) return num * 1024 * 1024 * 1024 * 1024;
+    if (s.includes('GB')) return num * 1024 * 1024 * 1024;
+    if (s.includes('MB')) return num * 1024 * 1024;
+    if (s.includes('KB')) return num * 1024;
+    return num;
+  };
+
+  const maxBytes = parseSize(policy.max_size);
+
+  if (matchedSector && !policy.allowed_exts?.includes(ext)) {
+    return { allowed: false, error: `Extensão .${ext} desabilitada pela política de governança.` };
+  }
+  if (fileSize > maxBytes) {
+    return { allowed: false, error: `Tamanho excede o limite de ${policy.max_size} para este setor.` };
+  }
+  return { allowed: true };
+};
+
 // --- DATA PLANE STORAGE EXTENDED ---
 
 // Listar Buckets (Pastas raiz)
@@ -369,61 +407,51 @@ app.post('/api/data/:slug/storage/:bucket/folder', cascataAuth as any, async (re
   res.json({ success: true });
 });
 
-// Upload com Validação de Regras de Tamanho
+// Duplicar Objeto (Arquivo ou Pasta)
+app.post('/api/data/:slug/storage/:bucket/duplicate', cascataAuth as any, async (req: any, res: any) => {
+  const { targetPath } = req.body;
+  const source = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, targetPath);
+  
+  if (!fs.existsSync(source)) return res.status(404).json({ error: 'Source not found' });
+
+  const ext = path.extname(targetPath);
+  const base = targetPath.replace(ext, '');
+  const dest = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, `${base}_copy_${Date.now()}${ext}`);
+
+  try {
+    if (fs.lstatSync(source).isDirectory()) {
+      fs.cpSync(source, dest, { recursive: true });
+    } else {
+      fs.copyFileSync(source, dest);
+    }
+    res.json({ success: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// Upload com Governança Unificada
 app.post('/api/data/:slug/storage/:bucket/upload', cascataAuth as any, upload.single('file') as any, async (req: any, res: any) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
 
-  // Governança de Storage Refinada
-  const governance = req.project.metadata?.storage_governance;
-  const ext = path.extname(req.file.originalname).toLowerCase().replace('.', '');
-  const size = req.file.size;
-
-  if (governance) {
-    let matchedSector: any = null;
-    for (const [sectorId, config] of Object.entries(governance) as any) {
-      if (sectorId !== 'global' && config.allowed_exts?.includes(ext)) {
-        matchedSector = config;
-        break;
-      }
-    }
-
-    const policy = matchedSector || governance.global || { max_size: '100MB', allowed_exts: [] };
-    
-    // Converter human-readable size para bytes
-    const parseSize = (s: string) => {
-      const num = parseFloat(s);
-      if (s.includes('GB')) return num * 1024 * 1024 * 1024;
-      if (s.includes('MB')) return num * 1024 * 1024;
-      if (s.includes('KB')) return num * 1024;
-      return num;
-    };
-
-    const maxBytes = parseSize(policy.max_size);
-
-    // Validação estrita
-    if (matchedSector && !policy.allowed_exts?.includes(ext)) {
-      fs.unlinkSync(req.file.path);
-      return res.status(400).json({ error: `O formato .${ext} foi desabilitado para este setor.` });
-    }
-
-    if (size > maxBytes) {
-      fs.unlinkSync(req.file.path);
-      return res.status(400).json({ error: `O arquivo excede o limite de ${policy.max_size} definido na política.` });
-    }
+  const validation = validateGovernance(req, req.file.originalname, req.file.size);
+  if (!validation.allowed) {
+    fs.unlinkSync(req.file.path);
+    return res.status(400).json({ error: validation.error });
   }
 
   const targetPath = req.body.path || '';
   const dest = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, targetPath, req.file.originalname);
   if (!fs.existsSync(path.dirname(dest))) fs.mkdirSync(path.dirname(dest), { recursive: true });
+  
   fs.renameSync(req.file.path, dest);
   res.json({ success: true, name: req.file.originalname });
 });
 
-// Mover/Renomear
+// Mover Objeto
 app.patch('/api/data/:slug/storage/:bucket/object', cascataAuth as any, async (req: any, res: any) => {
   const { oldPath, newPath } = req.body;
   const oldFull = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, oldPath);
   const newFull = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, newPath);
+  
   if (fs.existsSync(oldFull)) {
     if (!fs.existsSync(path.dirname(newFull))) fs.mkdirSync(path.dirname(newFull), { recursive: true });
     fs.renameSync(oldFull, newFull);
@@ -442,12 +470,12 @@ app.delete('/api/data/:slug/storage/:bucket/object', cascataAuth as any, async (
   } else res.status(404).json({ error: 'Not found' });
 });
 
-// Servir Arquivo (Download)
+// Servir (Download/Visualização)
 app.get('/api/data/:slug/storage/:bucket/object/:path(*)', cascataAuth as any, async (req: any, res: any) => {
   const full = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, req.params.path);
   if (fs.existsSync(full) && !fs.lstatSync(full).isDirectory()) {
     res.sendFile(full);
-  } else res.status(404).json({ error: 'Asset not found.' });
+  } else res.status(404).json({ error: 'Not found' });
 });
 
 // --- DATA PLANE ROUTES ---
