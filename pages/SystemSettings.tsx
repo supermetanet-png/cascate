@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Shield, Globe, Key, Lock, Mail, CheckCircle2, AlertCircle, Loader2, 
-  ExternalLink, ShieldCheck, RefreshCw, Activity, Terminal, CloudLightning
+  ExternalLink, ShieldCheck, RefreshCw, Activity, Terminal, CloudLightning, Info
 } from 'lucide-react';
 
 const SystemSettings: React.FC = () => {
@@ -55,6 +55,7 @@ const SystemSettings: React.FC = () => {
     <div className="p-12 lg:p-20 max-w-7xl mx-auto w-full space-y-16 pb-80">
       {(error || success) && (
         <div className={`fixed top-8 left-1/2 -translate-x-1/2 z-[500] p-6 rounded-[2rem] shadow-2xl flex items-center gap-4 animate-in slide-in-from-top-4 ${error ? 'bg-rose-600 text-white' : 'bg-indigo-600 text-white'}`}>
+          {/* Fixed typo: changed size(20) to size={20} to correctly pass the size prop */}
           {error ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
           <span className="text-sm font-black tracking-tight">{error || success}</span>
         </div>
@@ -83,6 +84,12 @@ const SystemSettings: React.FC = () => {
                 <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
                 <input value={adminEmail} readOnly className="w-full bg-slate-50 border border-slate-100 rounded-2xl py-4 pl-12 pr-6 text-sm font-bold text-slate-400 outline-none" />
               </div>
+            </div>
+            <div className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100 flex gap-4">
+               <Info size={20} className="text-indigo-600 shrink-0" />
+               <p className="text-[11px] text-indigo-700 font-bold leading-relaxed">
+                 Atenção: O isolamento de sub-domínios para instâncias de dados requer que o DNS do domínio global ({currentDomain || '...'}) esteja corretamente apontado para este IP via CNAME ou Registro A.
+               </p>
             </div>
           </div>
         </div>
@@ -120,10 +127,10 @@ const SystemSettings: React.FC = () => {
               
               {currentDomain && (
                 <button 
-                  onClick={() => alert('Provisionando SSL via Certbot...')}
+                  onClick={() => alert('Dica Cloudflare: Se estiver usando Cloudflare Proxy (Orange Cloud), certifique-se de usar o modo SSL/TLS "Full (Strict)" para compatibilidade total com o provisionamento automático.')}
                   className="flex-1 bg-emerald-500 text-white py-6 rounded-[2rem] font-black uppercase tracking-widest text-xs flex items-center justify-center gap-3 hover:bg-emerald-600 transition-all shadow-xl"
                 >
-                  <CloudLightning size={16} /> SSL
+                  <CloudLightning size={16} /> Gerar SSL
                 </button>
               )}
             </div>

@@ -67,16 +67,20 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
 
     if (proj) {
       req.project = proj;
-      req.projectPool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${proj.db_name}`) });
+      const dbUrl = process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${proj.db_name}`);
+      req.projectPool = new Pool({ connectionString: dbUrl });
     }
     next();
-  } catch (e) { res.status(500).json({ error: 'Context Resolution Error' }); }
+  } catch (e) { 
+    console.error("[CTX ERROR]", e);
+    res.status(500).json({ error: 'Context Resolution Error' }); 
+  }
 };
 
 app.use(securityMaster as any);
 app.use(resolveProject as any);
 
-// --- CONTROL PLANE (ADMIN) ---
+// --- CONTROL PLANE ---
 
 app.post('/api/control/auth/login', async (req: any, res: any) => {
   const { email, password } = req.body;
@@ -128,22 +132,8 @@ app.patch('/api/control/projects/:slug', async (req: any, res: any) => {
   res.json(result.rows[0]);
 });
 
-app.post('/api/control/projects/:slug/rotate-keys', async (req: any, res: any) => {
-  const { type } = req.body;
-  const field = type === 'anon' ? 'anon_key' : type === 'service' ? 'service_key' : 'jwt_secret';
-  const newKey = generateKey();
-  await systemPool.query(`UPDATE system.projects SET ${field} = $1 WHERE slug = $2`, [newKey, req.params.slug]);
-  res.json({ success: true, key: newKey });
-});
+// --- DATA PLANE ---
 
-app.get('/api/control/projects/:slug/webhooks', async (req: any, res: any) => {
-  const result = await systemPool.query('SELECT * FROM system.webhooks WHERE project_slug = $1', [req.params.slug]);
-  res.json(result.rows);
-});
-
-// --- DATA PLANE (PROJETO) ---
-
-// 1. Assets e Lógica
 app.get('/api/data/:slug/assets', async (req: any, res: any) => {
   const result = await systemPool.query('SELECT * FROM system.assets WHERE project_slug = $1', [req.params.slug]);
   res.json(result.rows);
@@ -151,21 +141,20 @@ app.get('/api/data/:slug/assets', async (req: any, res: any) => {
 
 app.post('/api/data/:slug/assets', async (req: any, res: any) => {
   const { id, name, type, parent_id, metadata } = req.body;
-  const result = await systemPool.query(
-    `INSERT INTO system.assets (id, project_slug, name, type, parent_id, metadata) 
-     VALUES (COALESCE($1, uuid_generate_v4()), $2, $3, $4, $5, $6) 
-     ON CONFLICT (id) DO UPDATE SET name = $3, metadata = $6, updated_at = now() RETURNING *`,
-    [id, req.params.slug, name, type, parent_id, metadata]
-  );
-  res.json(result.rows[0]);
+  try {
+    const result = await systemPool.query(
+      `INSERT INTO system.assets (id, project_slug, name, type, parent_id, metadata) 
+       VALUES (COALESCE($1, uuid_generate_v4()), $2, $3, $4, $5, $6) 
+       ON CONFLICT (id) DO UPDATE SET name = $3, metadata = $6, updated_at = now() RETURNING *`,
+      [id, req.params.slug, name, type, parent_id, metadata]
+    );
+    res.json(result.rows[0]);
+  } catch (e: any) {
+    console.error("[ASSET POST ERROR]", e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
-app.delete('/api/data/:slug/assets/:id', async (req: any, res: any) => {
-  await systemPool.query('DELETE FROM system.assets WHERE id = $1 AND project_slug = $2', [req.params.id, req.params.slug]);
-  res.json({ success: true });
-});
-
-// 2. UI Persistência
 app.get('/api/data/:slug/ui-settings/:table', async (req: any, res: any) => {
   const result = await systemPool.query('SELECT settings FROM system.ui_settings WHERE project_slug = $1 AND table_name = $2', [req.params.slug, req.params.table]);
   res.json(result.rows[0]?.settings || {});
@@ -180,16 +169,6 @@ app.post('/api/data/:slug/ui-settings/:table', async (req: any, res: any) => {
   res.json({ success: true });
 });
 
-// 3. Storage
-app.get('/api/data/:slug/storage/buckets', async (req: any, res: any) => {
-  res.json([{ name: 'public-assets' }, { name: 'user-uploads' }]);
-});
-
-app.get('/api/data/:slug/storage/:bucket/list', async (req: any, res: any) => {
-  res.json({ files: [] });
-});
-
-// 4. Database Core
 app.get('/api/data/:slug/auth/users', async (req: any, res: any) => {
   try { const r = await req.projectPool.query("SELECT id, email, created_at FROM auth.users"); res.json(r.rows); } catch(e) { res.json([]); }
 });
@@ -199,17 +178,10 @@ app.post('/api/data/:slug/auth/users', async (req: any, res: any) => {
   try {
     const r = await req.projectPool.query("INSERT INTO auth.users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at", [email, password]);
     res.json(r.rows[0]);
-  } catch(e: any) { res.status(400).json({ error: e.message }); }
-});
-
-app.get('/api/data/:slug/functions', async (req: any, res: any) => {
-  const r = await req.projectPool.query("SELECT n.nspname as schema, p.proname as name FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = 'public'");
-  res.json(r.rows);
-});
-
-app.get('/api/data/:slug/triggers', async (req: any, res: any) => {
-  const r = await req.projectPool.query("SELECT tgname as name, relname as table_name FROM pg_trigger JOIN pg_class ON pg_trigger.tgrelid = pg_class.oid WHERE NOT tgisinternal");
-  res.json(r.rows);
+  } catch(e: any) { 
+    console.error("[AUTH POST ERROR]", e);
+    res.status(400).json({ error: e.message }); 
+  }
 });
 
 app.get('/api/data/:slug/policies', async (req: any, res: any) => {
@@ -222,55 +194,8 @@ app.get('/api/data/:slug/tables', async (req: any, res: any) => {
   res.json(r.rows);
 });
 
-app.post('/api/data/:slug/tables', async (req: any, res: any) => {
-  const { name, columns } = req.body;
-  const colDefs = columns.map((c: any) => `"${c.name}" ${c.type} ${c.primaryKey ? 'PRIMARY KEY' : ''} ${c.nullable ? '' : 'NOT NULL'} ${c.default ? 'DEFAULT ' + c.default : ''}`).join(', ');
-  try {
-    await req.projectPool.query(`CREATE TABLE public."${name}" (${colDefs})`);
-    res.json({ success: true });
-  } catch(e: any) { res.status(400).json({ error: e.message }); }
-});
-
-app.get('/api/data/:slug/tables/:table/columns', async (req: any, res: any) => {
-  const r = await req.projectPool.query(`
-    SELECT column_name as name, data_type as type, is_nullable = 'YES' as "nullable",
-    EXISTS (SELECT 1 FROM information_schema.key_column_usage kcu JOIN information_schema.table_constraints tc ON kcu.constraint_name = tc.constraint_name WHERE kcu.table_name = $1 AND kcu.column_name = column_name AND tc.constraint_type = 'PRIMARY KEY') as "isPrimaryKey"
-    FROM information_schema.columns WHERE table_name = $1
-  `, [req.params.table]);
-  res.json(r.rows);
-});
-
-app.get('/api/data/:slug/tables/:table/data', async (req: any, res: any) => {
-  const r = await req.projectPool.query(`SELECT * FROM public."${req.params.table}" LIMIT 1000`);
-  res.json(r.rows);
-});
-
-app.post('/api/data/:slug/tables/:table/rows', async (req: any, res: any) => {
-  const { data } = req.body;
-  const cols = Object.keys(data).map(c => `"${c}"`).join(', ');
-  const vals = Object.values(data);
-  const placeholders = vals.map((_, i) => `$${i+1}`).join(', ');
-  try {
-    await req.projectPool.query(`INSERT INTO public."${req.params.table}" (${cols}) VALUES (${placeholders})`, vals);
-    res.json({ success: true });
-  } catch(e: any) { res.status(400).json({ error: e.message }); }
-});
-
-app.get('/api/data/:slug/logs', async (req: any, res: any) => {
-  const r = await systemPool.query('SELECT * FROM system.api_logs WHERE project_slug = $1 ORDER BY created_at DESC LIMIT 100', [req.params.slug]);
-  res.json(r.rows);
-});
-
-app.get('/api/data/:slug/stats', async (req: any, res: any) => {
-  try {
-    const t = await req.projectPool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'");
-    const s = await req.projectPool.query("SELECT pg_size_pretty(pg_database_size(current_database()))");
-    res.json({ tables: parseInt(t.rows[0].count), size: s.rows[0].pg_size_pretty, users: 0 });
-  } catch(e) { res.json({ tables: 0, size: '0 MB', users: 0 }); }
-});
-
 app.post('/api/data/:slug/query', async (req: any, res: any) => {
   try { res.json(await req.projectPool.query(req.body.sql)); } catch(e: any) { res.status(400).json({ error: e.message }); }
 });
 
-app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.3 operacional on port ${PORT}`));
+app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.4 operational`));
