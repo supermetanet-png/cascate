@@ -1,4 +1,3 @@
-
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import pg from 'pg';
@@ -131,6 +130,7 @@ app.use(customDomainRewriter as any);
  * - Implementa rejeição por padrão
  * - Validação estrita de chaves vinculadas ao projeto
  * - Normalização de headers e suporte a acesso mestre via Studio
+ * - Correção: Prioriza Authorization: Bearer para chamadas do Studio, garantindo privilégio de "Acesso Mestre"
  */
 const cascataAuth = async (req: any, res: any, next: NextFunction) => {
   // 1. Tratamento de Rotas do Plano de Controle (Admin Studio)
@@ -151,7 +151,7 @@ const cascataAuth = async (req: any, res: any, next: NextFunction) => {
   const bearerToken = (authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null)?.trim();
   const apikey = (apikeyRaw || bearerToken)?.trim();
 
-  // Verificação de Acesso Mestre (Admin do Studio acessando dados do projeto)
+  // Verificação de Acesso Mestre (Admin do Studio acessando dados do projeto via Bearer)
   if (bearerToken) {
     try {
       // Se o token for um JWT válido do sistema, concede privilégios de service_role para o Studio
@@ -319,6 +319,93 @@ app.post('/api/control/projects/:slug/webhooks', cascataAuth as any, async (req,
   res.json(result.rows[0]);
 });
 
+// --- DATA PLANE STORAGE EXTENDED ---
+
+// Listar Buckets (Pastas raiz)
+app.get('/api/data/:slug/storage/buckets', cascataAuth as any, async (req: any, res: any) => {
+  const p = path.join(STORAGE_ROOT, req.project.slug);
+  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
+  const items = fs.readdirSync(p).filter(f => fs.lstatSync(path.join(p, f)).isDirectory());
+  res.json(items.map(name => ({ name })));
+});
+
+// Criar Bucket
+app.post('/api/data/:slug/storage/buckets', cascataAuth as any, async (req: any, res: any) => {
+  const { name } = req.body;
+  const p = path.join(STORAGE_ROOT, req.project.slug, name);
+  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
+  res.json({ success: true });
+});
+
+// Listar Conteúdo (Arquivos e Subpastas)
+app.get('/api/data/:slug/storage/:bucket/list', cascataAuth as any, async (req: any, res: any) => {
+  const subPath = req.query.path || '';
+  const p = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, subPath as string);
+  if (!fs.existsSync(p)) return res.json({ items: [] });
+  
+  const items = fs.readdirSync(p).map(name => {
+    const full = path.join(p, name);
+    const stat = fs.statSync(full);
+    return {
+      name,
+      type: stat.isDirectory() ? 'folder' : 'file',
+      size: stat.size,
+      updated_at: stat.mtime,
+      path: path.join(subPath as string, name)
+    };
+  });
+  res.json({ items });
+});
+
+// Criar Pasta
+app.post('/api/data/:slug/storage/:bucket/folder', cascataAuth as any, async (req: any, res: any) => {
+  const { name, path: targetPath } = req.body;
+  const p = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, targetPath || '', name);
+  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
+  res.json({ success: true });
+});
+
+// Upload com Path
+app.post('/api/data/:slug/storage/:bucket/upload', cascataAuth as any, upload.single('file') as any, async (req: any, res: any) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const targetPath = req.body.path || '';
+  const dest = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, targetPath, req.file.originalname);
+  if (!fs.existsSync(path.dirname(dest))) fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.renameSync(req.file.path, dest);
+  res.json({ success: true, name: req.file.originalname });
+});
+
+// Mover/Renomear
+app.patch('/api/data/:slug/storage/:bucket/object', cascataAuth as any, async (req: any, res: any) => {
+  const { oldPath, newPath } = req.body;
+  const oldFull = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, oldPath);
+  const newFull = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, newPath);
+  if (fs.existsSync(oldFull)) {
+    if (!fs.existsSync(path.dirname(newFull))) fs.mkdirSync(path.dirname(newFull), { recursive: true });
+    fs.renameSync(oldFull, newFull);
+    res.json({ success: true });
+  } else res.status(404).json({ error: 'Not found' });
+});
+
+// Deletar
+app.delete('/api/data/:slug/storage/:bucket/object', cascataAuth as any, async (req: any, res: any) => {
+  const target = req.query.path as string;
+  const full = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, target);
+  if (fs.existsSync(full)) {
+    if (fs.lstatSync(full).isDirectory()) fs.rmSync(full, { recursive: true });
+    else fs.unlinkSync(full);
+    res.json({ success: true });
+  } else res.status(404).json({ error: 'Not found' });
+});
+
+// Servir Arquivo (Download)
+app.get('/api/data/:slug/storage/:bucket/object/:path(*)', cascataAuth as any, async (req: any, res: any) => {
+  const full = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, req.params.path);
+  if (fs.existsSync(full) && !fs.lstatSync(full).isDirectory()) {
+    res.sendFile(full);
+  } else res.status(404).json({ error: 'Not found' });
+});
+
 // --- DATA PLANE ROUTES ---
 
 app.get('/api/data/:slug/policies', cascataAuth as any, async (req: any, res: any) => {
@@ -465,26 +552,4 @@ app.get('/api/data/:slug/logs', cascataAuth as any, async (req: any, res: any) =
   res.json(result.rows);
 });
 
-app.get('/api/data/:slug/storage/buckets', cascataAuth as any, async (req: any, res: any) => {
-  const p = path.join(STORAGE_ROOT, req.project.slug);
-  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
-  const folders = fs.readdirSync(p).filter(f => fs.lstatSync(path.join(p, f)).isDirectory());
-  res.json(folders.map(b => ({ name: b })));
-});
-
-app.get('/api/data/:slug/storage/:bucket/list', cascataAuth as any, async (req: any, res: any) => {
-  const p = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket);
-  if (!fs.existsSync(p)) return res.json({ files: [] });
-  const files = fs.readdirSync(p).map(f => ({ name: f }));
-  res.json({ files });
-});
-
-app.post('/api/data/:slug/storage/:bucket/upload', cascataAuth as any, upload.single('file') as any, async (req: any, res: any) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
-  const dest = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, req.file.originalname);
-  if (!fs.existsSync(path.dirname(dest))) fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.renameSync(req.file.path, dest);
-  res.json({ success: true, path: req.file.originalname });
-});
-
-app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.0 Zero Trust & High-Security na porta ${PORT}`));
+app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.1 Storage Orchestration na porta ${PORT}`));
