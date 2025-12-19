@@ -106,6 +106,7 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
     req.projectPool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${dbName}`) });
     next();
   } catch (e) { 
+    console.error('Project Resolution Error:', e);
     res.status(500).json({ error: 'Critical DB Resolution Error' }); 
   }
 };
@@ -123,55 +124,56 @@ const customDomainRewriter = (req: any, res: any, next: NextFunction) => {
 app.use(customDomainRewriter as any);
 
 const cascataAuth = async (req: any, res: any, next: NextFunction) => {
-  if (req.path.includes('/control/')) {
-    const authHeader = req.headers['authorization'];
-    if (!authHeader) return res.status(401).json({ error: 'Administrative Session Required' });
-    try {
-      const token = authHeader.split(' ')[1];
-      jwt.verify(token, process.env.SYSTEM_JWT_SECRET || 'secret');
+  try {
+    if (req.path.includes('/control/')) {
+      const authHeader = req.headers['authorization'];
+      if (!authHeader) return res.status(401).json({ error: 'Administrative Session Required' });
+      jwt.verify(authHeader.split(' ')[1], process.env.SYSTEM_JWT_SECRET || 'secret');
       return next();
-    } catch (e) { return res.status(401).json({ error: 'Invalid or Expired Admin Session' }); }
-  }
+    }
 
-  const apikeyRaw = req.headers['apikey'] || req.query.apikey;
-  const authHeader = req.headers['authorization'];
-  const bearerToken = (authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null)?.trim();
-  const queryToken = req.query.token;
-  const apikey = (apikeyRaw || bearerToken || queryToken)?.trim();
+    const apikeyRaw = req.headers['apikey'] || req.query.apikey;
+    const authHeader = req.headers['authorization'];
+    const bearerToken = (authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null)?.trim();
+    const queryToken = req.query.token;
+    const apikey = (apikeyRaw || bearerToken || queryToken)?.trim();
 
-  if (bearerToken || queryToken) {
-    try {
-      jwt.verify((bearerToken || queryToken), process.env.SYSTEM_JWT_SECRET || 'secret');
+    if (bearerToken || queryToken) {
+      try {
+        jwt.verify((bearerToken || queryToken), process.env.SYSTEM_JWT_SECRET || 'secret');
+        req.userRole = 'service_role';
+        return next();
+      } catch (e) {}
+    }
+
+    if (apikey === req.project?.service_key) {
       req.userRole = 'service_role';
       return next();
-    } catch (e) {}
-  }
+    }
 
-  if (apikey === req.project?.service_key) {
-    req.userRole = 'service_role';
-    return next();
-  }
+    if (apikey === req.project?.anon_key) {
+      req.userRole = 'anon';
+    }
 
-  if (apikey === req.project?.anon_key) {
-    req.userRole = 'anon';
-  }
+    if ((bearerToken || queryToken) && req.project?.jwt_secret) {
+      try {
+        const decoded = jwt.verify((bearerToken || queryToken), req.project.jwt_secret);
+        req.user = decoded; 
+        req.userRole = 'authenticated';
+        return next();
+      } catch (e) {}
+    }
 
-  if ((bearerToken || queryToken) && req.project?.jwt_secret) {
-    try {
-      const decoded = jwt.verify((bearerToken || queryToken), req.project.jwt_secret);
-      req.user = decoded; 
-      req.userRole = 'authenticated';
-      return next();
-    } catch (e) {}
-  }
+    if (!req.userRole) {
+      return res.status(401).json({ 
+        error: 'Access Denied: Invalid API Key or Authorization Token for this project context.' 
+      });
+    }
 
-  if (!req.userRole) {
-    return res.status(401).json({ 
-      error: 'Access Denied: Invalid API Key or Authorization Token for this project context.' 
-    });
+    next();
+  } catch (e) {
+    res.status(401).json({ error: 'Auth context failure' });
   }
-
-  next();
 };
 
 // --- CONTROL PLANE EXTENSIONS ---
@@ -592,13 +594,38 @@ app.get('/api/data/:slug/triggers', cascataAuth as any, async (req: any, res: an
   res.json(result.rows);
 });
 
-// --- AUTH ROUTES (ATUALIZADOS COM USER MAPPING) ---
+// --- AUTH ENGINE & USER MAPPING (VÍNCULO FORTE) ---
 
+// Listar usuários com paginação e filtros
 app.get('/api/data/:slug/auth/users', cascataAuth as any, async (req: any, res: any) => {
-  const result = await req.projectPool.query('SELECT id, email, created_at FROM auth.users ORDER BY created_at DESC');
-  res.json(result.rows);
+  try {
+    const limit = req.query.limit === 'all' ? 10000 : parseInt(req.query.limit as string) || 10;
+    const offset = parseInt(req.query.offset as string) || 0;
+    const search = req.query.search ? `%${req.query.search}%` : '%';
+    const filterTable = req.query.table || null;
+
+    let query = 'SELECT id, email, created_at FROM auth.users WHERE email LIKE $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3';
+    let params: any[] = [search, limit, offset];
+
+    if (filterTable) {
+      query = `
+        SELECT u.id, u.email, u.created_at 
+        FROM auth.users u
+        JOIN public."${filterTable}" p ON u.id = p.id
+        WHERE u.email LIKE $1
+        ORDER BY u.created_at DESC
+        LIMIT $2 OFFSET $3
+      `;
+    }
+
+    const result = await req.projectPool.query(query, params);
+    res.json(result.rows);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
+// Criar usuário com vinculação automática (Transacional)
 app.post('/api/data/:slug/auth/users', cascataAuth as any, async (req: any, res: any) => {
   const { email, password, target_table } = req.body;
   const client = await req.projectPool.connect();
@@ -606,19 +633,19 @@ app.post('/api/data/:slug/auth/users', cascataAuth as any, async (req: any, res:
   try {
     await client.query('BEGIN');
     
-    // 1. Criar usuário no schema auth
+    // 1. Inserir no schema auth
     const userRes = await client.query(
       'INSERT INTO auth.users (email, password_hash) VALUES ($1, $2) RETURNING id',
       [email, password]
     );
     const userId = userRes.rows[0].id;
 
-    // 2. Verificar Mapeamento (User Linking)
+    // 2. Determinar tabela de destino (Mapeamento Dinâmico)
     const mapping = req.project.metadata?.user_table_mapping;
     const tableToLink = target_table || mapping?.principal_table;
 
     if (tableToLink) {
-      // Cria o registro correspondente na tabela pública mapeada
+      // Inserção na tabela pública vinculando pelo UUID (VÍNCULO FORTE PARA RLS)
       await client.query(`INSERT INTO public."${tableToLink}" (id, email) VALUES ($1, $2)`, [userId, email]);
     }
 
@@ -626,23 +653,50 @@ app.post('/api/data/:slug/auth/users', cascataAuth as any, async (req: any, res:
     res.json({ id: userId, email, success: true });
   } catch (e: any) {
     await client.query('ROLLBACK');
+    console.error('User Creation Atomic Failure:', e);
     res.status(400).json({ error: e.message });
   } finally {
     client.release();
   }
 });
 
-// Salvar metadados de mapeamento
+// Salvar Configurações de Mapeamento (Evita 502 limpando buffers)
 app.post('/api/data/:slug/auth/mapping', cascataAuth as any, async (req: any, res: any) => {
-  const { principal_table, additional_tables } = req.body;
-  const metadata = req.project.metadata || {};
-  metadata.user_table_mapping = { principal_table, additional_tables };
-  
-  await systemPool.query(
-    'UPDATE system.projects SET metadata = $1 WHERE slug = $2',
-    [JSON.stringify(metadata), req.params.slug]
-  );
-  res.json({ success: true });
+  try {
+    const { principal_table, additional_tables } = req.body;
+    const metadata = req.project.metadata || {};
+    metadata.user_table_mapping = { principal_table, additional_tables };
+    
+    await systemPool.query(
+      'UPDATE system.projects SET metadata = $1 WHERE slug = $2',
+      [JSON.stringify(metadata), req.params.slug]
+    );
+    res.json({ success: true });
+  } catch (e: any) {
+    console.error('Mapping Metadata Error:', e);
+    res.status(500).json({ error: 'Falha ao persistir metadados de mapeamento.' });
+  }
+});
+
+// Reset de Senha / Gestão de Conta
+app.patch('/api/data/:slug/auth/users/:id', cascataAuth as any, async (req: any, res: any) => {
+  const { password, email } = req.body;
+  try {
+    if (password) {
+      await req.projectPool.query('UPDATE auth.users SET password_hash = $1 WHERE id = $2', [password, req.params.id]);
+    }
+    if (email) {
+      await req.projectPool.query('UPDATE auth.users SET email = $1 WHERE id = $2', [email, req.params.id]);
+    }
+    res.json({ success: true });
+  } catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+
+app.delete('/api/data/:slug/auth/users/:id', cascataAuth as any, async (req: any, res: any) => {
+  try {
+    await req.projectPool.query('DELETE FROM auth.users WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
 app.get('/api/data/:slug/stats', cascataAuth as any, async (req: any, res: any) => {
