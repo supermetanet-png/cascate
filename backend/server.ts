@@ -19,7 +19,6 @@ const { Pool } = pg;
 const systemPool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL });
 const PORT = process.env.PORT || 3000;
 
-// Fixed process.cwd() type error by using path.resolve instead of calling process.cwd() explicitly
 const STORAGE_ROOT = path.resolve('storage');
 if (!fs.existsSync(STORAGE_ROOT)) fs.mkdirSync(STORAGE_ROOT, { recursive: true });
 
@@ -28,41 +27,70 @@ const generateKey = () => crypto.randomBytes(32).toString('hex');
 
 // --- MIDDLEWARES ---
 
+// Firewall de IP e Segurança
+const firewall = async (req: any, res: any, next: NextFunction) => {
+  if (!req.project) return next();
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  if (req.project.blocklist && req.project.blocklist.includes(clientIp)) {
+    return res.status(403).json({ error: 'Access denied by security policy (IP Blocked)' });
+  }
+  next();
+};
+
 const auditLogger = async (req: any, res: any, next: NextFunction) => {
   const start = Date.now();
-  res.on('finish', async () => {
+  const oldJson = res.json;
+
+  // Intercepta a resposta para registrar o status e corpo se necessário
+  res.json = function(data: any) {
+    const duration = Date.now() - start;
+    const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    
     if (req.project) {
-      const duration = Date.now() - start;
-      await systemPool.query(
-        'INSERT INTO system.api_logs (project_slug, method, path, status_code, client_ip, duration_ms, user_role) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-        [req.project.slug, req.method, req.path, res.statusCode, req.ip, duration, req.userRole || 'anon']
-      ).catch(() => {});
+      // Registrar log de forma assíncrona (não bloqueante)
+      systemPool.query(
+        `INSERT INTO system.api_logs 
+        (project_slug, method, path, status_code, client_ip, duration_ms, user_role, payload, headers, user_agent) 
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          req.project.slug, 
+          req.method, 
+          req.path, 
+          res.statusCode, 
+          clientIp, 
+          duration, 
+          req.userRole || 'anon',
+          JSON.stringify(req.body || {}),
+          JSON.stringify({ 
+            referer: req.headers.referer, 
+            origin: req.headers.origin,
+            host: req.headers.host 
+          }),
+          req.headers['user-agent']
+        ]
+      ).catch(e => console.error('Logging failed', e));
     }
-  });
+    return oldJson.apply(res, arguments as any);
+  };
   next();
 };
 
 const resolveProject = async (req: any, res: any, next: NextFunction) => {
-  // Ignora rotas de controle
   if (req.path.includes('/control/')) return next();
 
   const host = req.headers.host;
   const pathParts = req.path.split('/');
-  const slugFromUrl = pathParts[3]; // /api/data/:slug/...
+  const slugFromUrl = pathParts[3]; 
 
   try {
     let projectResult;
-    
-    // 1. Tenta resolver pelo Host (Domínio Customizado)
     projectResult = await systemPool.query('SELECT * FROM system.projects WHERE custom_domain = $1', [host]);
     
-    // 2. Fallback: Tenta resolver pelo Slug na URL
     if (projectResult.rowCount === 0 && slugFromUrl) {
       projectResult = await systemPool.query('SELECT * FROM system.projects WHERE slug = $1', [slugFromUrl]);
     }
 
     if (!projectResult.rows[0]) {
-      // Se for uma rota de API mas não achou projeto, 404
       if (req.path.startsWith('/api/data/')) return res.status(404).json({ error: 'Project context not found.' });
       return next();
     }
@@ -76,17 +104,17 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
   }
 };
 
+// Aplicação de middlewares na ordem correta
 app.use(resolveProject as any);
+app.use(firewall as any);
+app.use(auditLogger as any);
 
-// Middleware para suportar domínios customizados (sem prefixo /api/data/:slug)
 const customDomainRewriter = (req: any, res: any, next: NextFunction) => {
   if (req.project && !req.url.startsWith('/api/data/') && !req.url.startsWith('/api/control/')) {
-    // Reescreve a URL internamente para bater com as rotas que esperam o prefixo
     req.url = `/api/data/${req.project.slug}${req.url}`;
   }
   next();
 };
-
 app.use(customDomainRewriter as any);
 
 const cascataAuth = async (req: any, res: any, next: NextFunction) => {
@@ -117,7 +145,47 @@ const cascataAuth = async (req: any, res: any, next: NextFunction) => {
   next();
 };
 
-// --- CONTROL PLANE ---
+// --- CONTROL PLANE EXTENSIONS ---
+
+// Bloquear IP
+app.post('/api/control/projects/:slug/block-ip', cascataAuth as any, async (req, res) => {
+  const { ip } = req.body;
+  await systemPool.query(
+    'UPDATE system.projects SET blocklist = array_append(blocklist, $1) WHERE slug = $2 AND NOT ($1 = ANY(blocklist))',
+    [ip, req.params.slug]
+  );
+  res.json({ success: true });
+});
+
+// Desbloquear IP
+app.post('/api/control/projects/:slug/unblock-ip', cascataAuth as any, async (req, res) => {
+  const { ip } = req.body;
+  await systemPool.query(
+    'UPDATE system.projects SET blocklist = array_remove(blocklist, $1) WHERE slug = $2',
+    [ip, req.params.slug]
+  );
+  res.json({ success: true });
+});
+
+// Limpeza de Logs
+app.delete('/api/control/projects/:slug/logs', cascataAuth as any, async (req, res) => {
+  const { days } = req.query;
+  const interval = `${days} days`;
+  await systemPool.query(
+    'DELETE FROM system.api_logs WHERE project_slug = $1 AND created_at < now() - $2::interval',
+    [req.params.slug, interval]
+  );
+  res.json({ success: true });
+});
+
+// Configurar Retenção
+app.patch('/api/control/projects/:slug/settings', cascataAuth as any, async (req, res) => {
+  const { log_retention_days } = req.body;
+  await systemPool.query('UPDATE system.projects SET log_retention_days = $1 WHERE slug = $2', [log_retention_days, req.params.slug]);
+  res.json({ success: true });
+});
+
+// --- RESTO DAS ROTAS EXISTENTES ---
 
 app.post('/api/control/auth/login', async (req, res) => {
   const { email, password } = req.body;
@@ -178,14 +246,6 @@ app.post('/api/control/projects', cascataAuth as any, async (req: any, res: any)
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/control/projects/:slug/rotate-keys', cascataAuth as any, async (req, res) => {
-  const { type } = req.body;
-  const newKey = generateKey();
-  const column = type === 'anon' ? 'anon_key' : type === 'service' ? 'service_key' : 'jwt_secret';
-  await systemPool.query(`UPDATE system.projects SET ${column} = $1 WHERE slug = $2`, [newKey, req.params.slug]);
-  res.json({ success: true, newKey });
-});
-
 app.get('/api/control/projects/:slug/webhooks', cascataAuth as any, async (req, res) => {
   const result = await systemPool.query('SELECT * FROM system.webhooks WHERE project_slug = $1 ORDER BY created_at DESC', [req.params.slug]);
   res.json(result.rows);
@@ -200,7 +260,7 @@ app.post('/api/control/projects/:slug/webhooks', cascataAuth as any, async (req,
   res.json(result.rows[0]);
 });
 
-// --- DATA PLANE - RLS & POLICIES ---
+// --- DATA PLANE ROUTES ---
 
 app.get('/api/data/:slug/policies', cascataAuth as any, async (req: any, res: any) => {
   const result = await req.projectPool.query(`SELECT schemaname, tablename, policyname, roles, cmd, qual, with_check FROM pg_policies WHERE schemaname = 'public'`);
@@ -217,13 +277,6 @@ app.delete('/api/data/:slug/policies/:table/:name', cascataAuth as any, async (r
   try { await req.projectPool.query(`DROP POLICY "${req.params.name}" ON public."${req.params.table}"`); res.json({ success: true }); } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
-// --- DATA PLANE - TABLES & EXPORT ---
-
-app.get('/api/data/:slug/tables/:table/sql', cascataAuth as any, async (req: any, res: any) => {
-  const result = await req.projectPool.query(`SELECT 'CREATE TABLE public."' || table_name || '" (' || string_agg('"' || column_name || '" ' || data_type || CASE WHEN is_nullable = 'NO' THEN ' NOT NULL' ELSE '' END, ', ') || ');' as ddl FROM information_schema.columns WHERE table_name = $1 GROUP BY table_name`, [req.params.table]);
-  res.json({ sql: result.rows[0]?.ddl || `-- No schema found for ${req.params.table}` });
-});
-
 app.post('/api/data/:slug/tables', cascataAuth as any, async (req: any, res: any) => {
   const { name, columns } = req.body;
   const colsSql = columns.map((c: any) => `"${c.name}" ${c.type} ${c.primaryKey ? 'PRIMARY KEY' : ''} ${c.nullable === false ? 'NOT NULL' : ''} ${c.default ? `DEFAULT ${c.default}` : ''}`).join(', ');
@@ -235,8 +288,6 @@ app.delete('/api/data/:slug/tables/:table', cascataAuth as any, async (req: any,
   try { await req.projectPool.query(`DROP TABLE public."${req.params.table}" CASCADE`); res.json({ success: true }); } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
-// --- UI SETTINGS ---
-
 app.get('/api/data/:slug/ui-settings/:table', cascataAuth as any, async (req: any, res: any) => {
   const result = await systemPool.query('SELECT settings FROM system.ui_settings WHERE project_slug = $1 AND table_name = $2', [req.project.slug, req.params.table]);
   res.json(result.rows[0]?.settings || {});
@@ -246,8 +297,6 @@ app.post('/api/data/:slug/ui-settings/:table', cascataAuth as any, async (req: a
   await systemPool.query('INSERT INTO system.ui_settings (project_slug, table_name, settings) VALUES ($1, $2, $3) ON CONFLICT (project_slug, table_name) DO UPDATE SET settings = $3', [req.project.slug, req.params.table, req.body.settings]);
   res.json({ success: true });
 });
-
-// --- ASSETS & LOGIC ENGINE ---
 
 app.get('/api/data/:slug/assets', cascataAuth as any, async (req: any, res: any) => {
   const result = await systemPool.query('SELECT * FROM system.assets WHERE project_slug = $1 ORDER BY created_at ASC', [req.project.slug]);
@@ -270,8 +319,6 @@ app.delete('/api/data/:slug/assets/:id', cascataAuth as any, async (req: any, re
   res.json({ success: true });
 });
 
-// --- RPC EXECUTION ---
-
 app.post('/api/data/:slug/rpc/:name', cascataAuth as any, async (req: any, res: any) => {
   const params = req.body;
   const keys = Object.keys(params);
@@ -282,8 +329,6 @@ app.post('/api/data/:slug/rpc/:name', cascataAuth as any, async (req: any, res: 
     res.json(result.rows);
   } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
-
-// --- DATA BROWSER & QUERY ---
 
 app.post('/api/data/:slug/query', cascataAuth as any, async (req: any, res: any) => {
   const { sql } = req.body;
@@ -301,7 +346,7 @@ app.get('/api/data/:slug/tables/:table/columns', cascataAuth as any, async (req:
   res.json(result.rows);
 });
 
-app.get('/api/data/:slug/tables/:table/data', cascataAuth as any, auditLogger as any, async (req: any, res: any) => {
+app.get('/api/data/:slug/tables/:table/data', cascataAuth as any, async (req: any, res: any) => {
   try { const result = await req.projectPool.query(`SELECT * FROM public."${req.params.table}" LIMIT 1000`); res.json(result.rows); } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
@@ -329,8 +374,6 @@ app.post('/api/data/:slug/tables/:table/delete-rows', cascataAuth as any, async 
   try { await req.projectPool.query(`DELETE FROM public."${req.params.table}" WHERE "${pkColumn}" = ANY($1)`, [ids]); res.json({ success: true }); } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
-// --- DISCOVERY ---
-
 app.get('/api/data/:slug/functions', cascataAuth as any, async (req: any, res: any) => {
   const result = await req.projectPool.query(`SELECT routine_name as name, routine_type as type FROM information_schema.routines WHERE routine_schema = 'public'`);
   res.json(result.rows);
@@ -340,8 +383,6 @@ app.get('/api/data/:slug/triggers', cascataAuth as any, async (req: any, res: an
   const result = await req.projectPool.query(`SELECT trigger_name as name, event_manipulation as event, event_object_table as table FROM information_schema.triggers WHERE trigger_schema = 'public'`);
   res.json(result.rows);
 });
-
-// --- AUTH & USER MGMT ---
 
 app.get('/api/data/:slug/auth/users', cascataAuth as any, async (req: any, res: any) => {
   const result = await req.projectPool.query('SELECT id, email, created_at FROM auth.users');
@@ -353,8 +394,6 @@ app.post('/api/data/:slug/auth/users', cascataAuth as any, async (req: any, res:
   try { await req.projectPool.query('INSERT INTO auth.users (email, password_hash) VALUES ($1, $2)', [email, password]); res.json({ success: true }); } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
-// --- STATS & LOGS ---
-
 app.get('/api/data/:slug/stats', cascataAuth as any, async (req: any, res: any) => {
   const tables = await req.projectPool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'");
   const users = await req.projectPool.query("SELECT count(*) FROM auth.users").catch(() => ({ rows: [{ count: 0 }] }));
@@ -363,11 +402,9 @@ app.get('/api/data/:slug/stats', cascataAuth as any, async (req: any, res: any) 
 });
 
 app.get('/api/data/:slug/logs', cascataAuth as any, async (req: any, res: any) => {
-  const result = await systemPool.query('SELECT * FROM system.api_logs WHERE project_slug = $1 ORDER BY created_at DESC LIMIT 100', [req.project.slug]);
+  const result = await systemPool.query('SELECT * FROM system.api_logs WHERE project_slug = $1 ORDER BY created_at DESC LIMIT 200', [req.project.slug]);
   res.json(result.rows);
 });
-
-// --- STORAGE ---
 
 app.get('/api/data/:slug/storage/buckets', cascataAuth as any, async (req: any, res: any) => {
   const p = path.join(STORAGE_ROOT, req.project.slug);
@@ -391,4 +428,4 @@ app.post('/api/data/:slug/storage/:bucket/upload', cascataAuth as any, upload.si
   res.json({ success: true, path: req.file.originalname });
 });
 
-app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v2.8 Operacional na porta ${PORT}`));
+app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v2.9 Observability & Security Operacional na porta ${PORT}`));
