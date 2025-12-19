@@ -664,17 +664,34 @@ app.post('/api/data/:slug/auth/users', cascataAuth as any, async (req: any, res:
 app.post('/api/data/:slug/auth/mapping', cascataAuth as any, async (req: any, res: any) => {
   try {
     const { principal_table, additional_tables } = req.body;
-    const metadata = req.project.metadata || {};
+    
+    // Buscar projeto atual para pegar metadata existente
+    const projectResult = await systemPool.query(
+      'SELECT metadata FROM system.projects WHERE slug = $1',
+      [req.params.slug]
+    );
+    
+    if (!projectResult.rows[0]) {
+      return res.status(404).json({ error: 'Projeto não encontrado' });
+    }
+    
+    // Garantir que metadata seja um objeto válido
+    const currentMetadata = projectResult.rows[0].metadata || {};
+    const metadata = typeof currentMetadata === 'string' ? JSON.parse(currentMetadata) : currentMetadata;
+    
+    // Atualizar o mapeamento
     metadata.user_table_mapping = { principal_table, additional_tables };
     
+    // Salvar de volta
     await systemPool.query(
       'UPDATE system.projects SET metadata = $1 WHERE slug = $2',
       [JSON.stringify(metadata), req.params.slug]
     );
-    res.json({ success: true });
+    
+    res.json({ success: true, metadata });
   } catch (e: any) {
     console.error('Mapping Metadata Error:', e);
-    res.status(500).json({ error: 'Falha ao persistir metadados de mapeamento.' });
+    res.status(500).json({ error: 'Falha ao persistir metadados de mapeamento.', details: e.message });
   }
 });
 
