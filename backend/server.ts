@@ -49,6 +49,9 @@ const auditLogger = async (req: any, res: any, next: NextFunction) => {
     const isInternal = req.headers.referer?.includes(req.headers.host || '') || false;
 
     if (req.project) {
+      // Auditoria enriquecida para detectar falhas de autenticação
+      const authStatus = res.statusCode === 401 || res.statusCode === 403 ? 'SECURITY_ALERT' : 'AUTHORIZED';
+
       systemPool.query(
         `INSERT INTO system.api_logs 
         (project_slug, method, path, status_code, client_ip, duration_ms, user_role, payload, headers, user_agent, geo_info) 
@@ -60,7 +63,7 @@ const auditLogger = async (req: any, res: any, next: NextFunction) => {
           res.statusCode, 
           clientIp, 
           duration, 
-          req.userRole || 'anon',
+          req.userRole || 'unauthorized',
           JSON.stringify(req.body || {}),
           JSON.stringify({ 
             referer: req.headers.referer, 
@@ -68,7 +71,11 @@ const auditLogger = async (req: any, res: any, next: NextFunction) => {
             host: req.headers.host 
           }),
           req.headers['user-agent'],
-          JSON.stringify({ is_internal: isInternal }) // Armazena flag interna
+          JSON.stringify({ 
+            is_internal: isInternal,
+            auth_status: authStatus,
+            attempted_at: new Date().toISOString()
+          })
         ]
       ).catch(e => console.error('Logging failed', e));
     }
@@ -93,7 +100,8 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
     }
 
     if (!projectResult.rows[0]) {
-      if (req.path.startsWith('/api/data/')) return res.status(404).json({ error: 'Project context not found.' });
+      // Bloqueio imediato 404 para rotas de dados sem projeto válido
+      if (req.path.startsWith('/api/data/')) return res.status(404).json({ error: 'Project infrastructure context not found.' });
       return next();
     }
 
@@ -102,7 +110,7 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
     req.projectPool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${dbName}`) });
     next();
   } catch (e) { 
-    res.status(500).json({ error: 'DB Resolution Error' }); 
+    res.status(500).json({ error: 'Critical DB Resolution Error' }); 
   }
 };
 
@@ -118,39 +126,82 @@ const customDomainRewriter = (req: any, res: any, next: NextFunction) => {
 };
 app.use(customDomainRewriter as any);
 
+/**
+ * Middleware de Autenticação Cascata v3.0 (Zero Trust)
+ * - Implementa rejeição por padrão
+ * - Validação estrita de chaves vinculadas ao projeto
+ * - Normalização de headers e suporte a acesso mestre via Studio
+ */
 const cascataAuth = async (req: any, res: any, next: NextFunction) => {
+  // 1. Tratamento de Rotas do Plano de Controle (Admin Studio)
   if (req.path.includes('/control/')) {
     const authHeader = req.headers['authorization'];
-    if (!authHeader) return res.status(401).json({ error: 'Admin Required' });
+    if (!authHeader) return res.status(401).json({ error: 'Administrative Session Required' });
     try {
-      jwt.verify(authHeader.split(' ')[1], process.env.SYSTEM_JWT_SECRET || 'secret');
+      const token = authHeader.split(' ')[1];
+      jwt.verify(token, process.env.SYSTEM_JWT_SECRET || 'secret');
       return next();
-    } catch (e) { return res.status(401).json({ error: 'Invalid Session' }); }
+    } catch (e) { return res.status(401).json({ error: 'Invalid or Expired Admin Session' }); }
   }
 
-  const apikey = req.headers['apikey'] || req.query.apikey || req.headers['authorization']?.split(' ')[1];
-  
-  if (apikey === req.project?.service_key || apikey === req.project?.anon_key) { 
-    req.userRole = apikey === req.project?.service_key ? 'service_role' : 'anon'; 
-    return next(); 
-  }
-
+  // 2. Tratamento de Rotas do Plano de Dados (API de Projetos)
+  // Sanitização de chaves e normalização de transporte
+  const apikeyRaw = req.headers['apikey'] || req.query.apikey;
   const authHeader = req.headers['authorization'];
-  if (authHeader) {
+  const bearerToken = (authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null)?.trim();
+  const apikey = (apikeyRaw || bearerToken)?.trim();
+
+  // Verificação de Acesso Mestre (Admin do Studio acessando dados do projeto)
+  if (bearerToken) {
     try {
-      const decoded = jwt.verify(authHeader.split(' ')[1], req.project.jwt_secret);
+      // Se o token for um JWT válido do sistema, concede privilégios de service_role para o Studio
+      jwt.verify(bearerToken, process.env.SYSTEM_JWT_SECRET || 'secret');
+      req.userRole = 'service_role';
+      return next();
+    } catch (e) {
+      // Se não for admin, segue para verificação de chaves do projeto
+    }
+  }
+
+  // Validação Estrita vinculada ao Contexto do Projeto (req.project)
+  if (apikey === req.project?.service_key) {
+    req.userRole = 'service_role';
+    return next();
+  }
+
+  if (apikey === req.project?.anon_key) {
+    req.userRole = 'anon';
+    // Se for apenas anon key, continua para ver se há um JWT de usuário autenticado
+  }
+
+  // Verificação de JWT de Usuário do Projeto (auth.users)
+  if (bearerToken && req.project?.jwt_secret) {
+    try {
+      const decoded = jwt.verify(bearerToken, req.project.jwt_secret);
       req.user = decoded; 
       req.userRole = 'authenticated';
-    } catch (e) {}
+      return next();
+    } catch (e) {
+      // JWT inválido, mas se tiver anon_key válida, continua como anon
+    }
   }
+
+  // Rejeição por Padrão (Strict Gate)
+  if (!req.userRole) {
+    return res.status(401).json({ 
+      error: 'Access Denied: Invalid API Key or Authorization Token for this project context.' 
+    });
+  }
+
+  // Caso tenha caído como anon (e não retornou via service_role ou authenticated)
   next();
 };
 
 // --- CONTROL PLANE EXTENSIONS ---
 
 // Helper para descobrir IP atual do usuário
-app.get('/api/control/me/ip', (req: Request, res: Response) => {
-  // Fix: Access socket property through any casting to bypass TypeScript error if not correctly typed in the environment
+// Fix: Explicitly use 'any' type for req and res parameters to resolve ambiguous 'Request' and 'Response' type definitions and ensure access to standard express properties.
+app.get('/api/control/me/ip', (req: any, res: any) => {
   const ip = req.headers['x-forwarded-for'] || (req as any).socket?.remoteAddress;
   res.json({ ip });
 });
@@ -436,4 +487,4 @@ app.post('/api/data/:slug/storage/:bucket/upload', cascataAuth as any, upload.si
   res.json({ success: true, path: req.file.originalname });
 });
 
-app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v2.9 Observability & Security Operacional na porta ${PORT}`));
+app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.0 Zero Trust & High-Security na porta ${PORT}`));

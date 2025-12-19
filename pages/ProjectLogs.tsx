@@ -47,16 +47,15 @@ const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const handleBlockIp = async (ip: string, isInternal: boolean) => {
-    // PROTEÇÃO CRÍTICA: Bloqueia tentativa de bloquear o próprio servidor ou o IP do operador atual
     const isSelfBlocking = ip === currentUserIp;
     
     if (isInternal) {
-      alert("Operação Abortada: Este IP pertence à infraestrutura interna da Cascata e não pode ser bloqueado para garantir a integridade do Studio.");
+      alert("Operação Abortada: Este IP pertence à infraestrutura interna da Cascata e não pode ser bloqueado.");
       return;
     }
 
     if (isSelfBlocking) {
-      if (!confirm(`ALERTA DE SEGURANÇA: O IP ${ip} corresponde ao SEU IP ATUAL. Se você bloquear este IP, perderá acesso imediato ao painel e a todas as APIs. Deseja realmente prosseguir com este auto-bloqueio?`)) return;
+      if (!confirm(`ALERTA DE SEGURANÇA: O IP ${ip} corresponde ao SEU IP ATUAL. Bloquear este IP interromperá seu acesso. Prosseguir?`)) return;
     } else {
       if (!confirm(`Confirmar bloqueio do IP ${ip}? Ele perderá acesso imediato a todas as APIs deste projeto.`)) return;
     }
@@ -85,7 +84,7 @@ const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
   };
 
   const handleClearLogs = async (days: number) => {
-    if (!confirm(`Remover permanentemente logs com mais de ${days} dias?`)) return;
+    if (!confirm(`Remover logs com mais de ${days} dias?`)) return;
     setExecuting(true);
     try {
       await fetch(`/api/control/projects/${projectId}/logs?days=${days}`, {
@@ -184,15 +183,17 @@ const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
                   </tr>
                 ) : filteredLogs.map((log) => {
                   const isInternal = log.geo_info?.is_internal;
+                  const isSecurityAlert = log.geo_info?.auth_status === 'SECURITY_ALERT';
+                  
                   return (
                     <tr 
                       key={log.id} 
                       onClick={() => setSelectedLog(log)}
-                      className={`hover:bg-indigo-50/30 transition-all cursor-pointer group ${selectedLog?.id === log.id ? 'bg-indigo-50' : ''} ${isInternal ? 'opacity-60' : ''}`}
+                      className={`hover:bg-indigo-50/30 transition-all cursor-pointer group ${selectedLog?.id === log.id ? 'bg-indigo-50' : ''} ${isInternal ? 'opacity-60' : ''} ${isSecurityAlert ? 'bg-rose-50/30' : ''}`}
                     >
                       <td className="px-8 py-5">
                         <div className="flex flex-col">
-                          <span className="text-xs font-bold text-slate-900">{new Date(log.created_at).toLocaleTimeString()}</span>
+                          <span className={`text-xs font-bold ${isSecurityAlert ? 'text-rose-600' : 'text-slate-900'}`}>{new Date(log.created_at).toLocaleTimeString()}</span>
                           <span className="text-[9px] font-black text-slate-400 uppercase tracking-tight">{new Date(log.created_at).toLocaleDateString()}</span>
                         </div>
                       </td>
@@ -208,7 +209,7 @@ const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
                         </div>
                       </td>
                       <td className="px-8 py-5 text-center">
-                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-50 px-3 py-1 rounded-full border border-slate-100">
+                        <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border ${isSecurityAlert ? 'bg-rose-100 text-rose-700 border-rose-200 animate-pulse' : 'bg-slate-50 text-slate-400 border-slate-100'}`}>
                           {log.user_role}
                         </span>
                       </td>
@@ -249,7 +250,7 @@ const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
 
             <div className="p-10 space-y-10">
               {/* Security Block Action with Intelligence */}
-              <div className={`rounded-[2.5rem] p-8 text-white relative overflow-hidden group ${selectedLog.geo_info?.is_internal ? 'bg-slate-900' : 'bg-rose-600'}`}>
+              <div className={`rounded-[2.5rem] p-8 text-white relative overflow-hidden group ${selectedLog.geo_info?.is_internal ? 'bg-slate-900' : selectedLog.geo_info?.auth_status === 'SECURITY_ALERT' ? 'bg-rose-900 shadow-[0_20px_40px_rgba(225,29,72,0.2)]' : 'bg-rose-600'}`}>
                 <ShieldAlert className="absolute -bottom-4 -right-4 w-32 h-32 opacity-10 group-hover:scale-125 transition-transform" />
                 <h4 className="font-black uppercase text-xs tracking-widest mb-1">Source Governance</h4>
                 <p className="text-[10px] font-medium opacity-80 mb-6 flex items-center gap-2">
@@ -270,24 +271,22 @@ const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
                     <><ShieldAlert size={14} className="text-rose-600"/> BLOQUEAR ORIGEM</>
                   )}
                 </button>
-                {selectedLog.client_ip === currentUserIp && !selectedLog.geo_info?.is_internal && (
-                  <p className="mt-4 text-[9px] font-black text-rose-200 leading-tight text-center uppercase tracking-widest">CUIDADO: BLOQUEAR SEU PRÓPRIO IP INTERROMPERÁ SEU ACESSO.</p>
-                )}
               </div>
 
               {/* Rich Metadata Sections */}
               <div className="space-y-8">
+                <DetailSection icon={<Globe2 size={16}/>} label="Security Context">
+                   <div className="grid grid-cols-2 gap-4">
+                     <InfoBox label="Auth Result" value={selectedLog.geo_info?.auth_status || 'UNKNOWN'} />
+                     <InfoBox label="Resolved Role" value={selectedLog.user_role || 'NONE'} />
+                   </div>
+                </DetailSection>
+
                 <DetailSection icon={<Globe2 size={16}/>} label="Origin Insights">
                   <div className="grid grid-cols-2 gap-4">
                     <InfoBox label="Client IP" value={selectedLog.client_ip} />
                     <InfoBox label="Latency" value={`${selectedLog.duration_ms}ms`} />
                   </div>
-                </DetailSection>
-
-                <DetailSection icon={<Cpu size={16}/>} label="Client Fingerprint">
-                   <div className="bg-slate-50 border border-slate-100 rounded-2xl p-5 font-mono text-[10px] text-slate-500 break-words leading-relaxed">
-                     {selectedLog.user_agent || 'Unknown UA'}
-                   </div>
                 </DetailSection>
 
                 <DetailSection icon={<Code size={16}/>} label="Request Payload">
@@ -361,9 +360,6 @@ const ProjectLogs: React.FC<{ projectId: string }> = ({ projectId }) => {
                           <option value="365">1 Ano</option>
                        </select>
                     </div>
-                    <p className="text-[10px] text-slate-400 font-medium leading-relaxed">
-                       O sistema executa automaticamente um cron job a cada 24h para remover registros que excedam sua política de retenção.
-                    </p>
                  </div>
               </div>
            </div>
