@@ -428,6 +428,43 @@ app.post('/api/data/:slug/storage/:bucket/duplicate', cascataAuth as any, async 
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// Renomear (Arquivo ou Pasta)
+app.patch('/api/data/:slug/storage/:bucket/rename', cascataAuth as any, async (req: any, res: any) => {
+  const { oldPath, newName } = req.body;
+  const oldFull = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, oldPath);
+  const dirName = path.dirname(oldPath);
+  const newFull = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, dirName, newName);
+
+  if (fs.existsSync(oldFull)) {
+    try {
+      fs.renameSync(oldFull, newFull);
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } else res.status(404).json({ error: 'Target not found' });
+});
+
+// Download Zip (Simulado - Requer implementação de stream de zip no ambiente)
+app.get('/api/data/:slug/storage/:bucket/zip', cascataAuth as any, async (req: any, res: any) => {
+  const targetPath = req.query.path as string;
+  const full = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, targetPath);
+  if (fs.existsSync(full) && fs.lstatSync(full).isDirectory()) {
+    // Aqui seria usado archiver ou adm-zip
+    res.status(501).json({ error: 'ZIP Engine requires server-side compression module. Logic ready.' });
+  } else res.status(404).json({ error: 'Folder not found' });
+});
+
+// CRUD de Políticas de Pasta
+app.post('/api/data/:slug/storage/policies', cascataAuth as any, async (req: any, res: any) => {
+  const { folderPath, policy } = req.body;
+  const project = req.project;
+  const metadata = project.metadata || {};
+  metadata.folder_policies = metadata.folder_policies || {};
+  metadata.folder_policies[folderPath] = policy;
+  
+  await systemPool.query('UPDATE system.projects SET metadata = $1 WHERE slug = $2', [JSON.stringify(metadata), req.params.slug]);
+  res.json({ success: true });
+});
+
 // Upload com Governança Unificada
 app.post('/api/data/:slug/storage/:bucket/upload', cascataAuth as any, upload.single('file') as any, async (req: any, res: any) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
