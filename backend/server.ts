@@ -44,11 +44,9 @@ const auditLogger = async (req: any, res: any, next: NextFunction) => {
     const duration = Date.now() - start;
     const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     
-    // Detecta se a requisição é interna do Studio (Referer corresponde ao Host)
     const isInternal = req.headers.referer?.includes(req.headers.host || '') || false;
 
     if (req.project) {
-      // Auditoria enriquecida para detectar falhas de autenticação
       const authStatus = res.statusCode === 401 || res.statusCode === 403 ? 'SECURITY_ALERT' : 'AUTHORIZED';
 
       systemPool.query(
@@ -99,7 +97,6 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
     }
 
     if (!projectResult.rows[0]) {
-      // Bloqueio imediato 404 para rotas de dados sem projeto válido
       if (req.path.startsWith('/api/data/')) return res.status(404).json({ error: 'Project infrastructure context not found.' });
       return next();
     }
@@ -125,16 +122,7 @@ const customDomainRewriter = (req: any, res: any, next: NextFunction) => {
 };
 app.use(customDomainRewriter as any);
 
-/**
- * Middleware de Autenticação Cascata v3.0 (Zero Trust)
- * - Implementa rejeição por padrão
- * - Validação estrita de chaves vinculadas ao projeto
- * - Normalização de headers e suporte a acesso mestre via Studio
- * - Correção: Prioriza Authorization: Bearer para chamadas do Studio, garantindo privilégio de "Acesso Mestre"
- * - SOLUÇÃO: Aceita token via query string para visualização de arquivos no navegador
- */
 const cascataAuth = async (req: any, res: any, next: NextFunction) => {
-  // 1. Tratamento de Rotas do Plano de Controle (Admin Studio)
   if (req.path.includes('/control/')) {
     const authHeader = req.headers['authorization'];
     if (!authHeader) return res.status(401).json({ error: 'Administrative Session Required' });
@@ -145,29 +133,20 @@ const cascataAuth = async (req: any, res: any, next: NextFunction) => {
     } catch (e) { return res.status(401).json({ error: 'Invalid or Expired Admin Session' }); }
   }
 
-  // 2. Tratamento de Rotas do Plano de Dados (API de Projetos)
-  // Sanitização de chaves e normalização de transporte
   const apikeyRaw = req.headers['apikey'] || req.query.apikey;
   const authHeader = req.headers['authorization'];
   const bearerToken = (authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null)?.trim();
-  
-  // SOLUÇÃO: Aceita token via query string para visualização de arquivos no navegador
   const queryToken = req.query.token;
   const apikey = (apikeyRaw || bearerToken || queryToken)?.trim();
 
-  // Verificação de Acesso Mestre (Admin do Studio acessando dados do projeto via Bearer)
   if (bearerToken || queryToken) {
     try {
-      // Se o token for um JWT válido do sistema, concede privilégios de service_role para o Studio
       jwt.verify((bearerToken || queryToken), process.env.SYSTEM_JWT_SECRET || 'secret');
       req.userRole = 'service_role';
       return next();
-    } catch (e) {
-      // Se não for admin, segue para verificação de chaves do projeto
-    }
+    } catch (e) {}
   }
 
-  // Validação Estrita vinculada ao Contexto do Projeto (req.project)
   if (apikey === req.project?.service_key) {
     req.userRole = 'service_role';
     return next();
@@ -175,42 +154,33 @@ const cascataAuth = async (req: any, res: any, next: NextFunction) => {
 
   if (apikey === req.project?.anon_key) {
     req.userRole = 'anon';
-    // Se for apenas anon key, continua para ver se há um JWT de usuário autenticado
   }
 
-  // Verificação de JWT de Usuário do Projeto (auth.users)
   if ((bearerToken || queryToken) && req.project?.jwt_secret) {
     try {
       const decoded = jwt.verify((bearerToken || queryToken), req.project.jwt_secret);
       req.user = decoded; 
       req.userRole = 'authenticated';
       return next();
-    } catch (e) {
-      // JWT inválido, mas se tiver anon_key válida, continua como anon
-    }
+    } catch (e) {}
   }
 
-  // Rejeição por Padrão (Strict Gate)
   if (!req.userRole) {
     return res.status(401).json({ 
       error: 'Access Denied: Invalid API Key or Authorization Token for this project context.' 
     });
   }
 
-  // Caso tenha caído como anon (e não retornou via service_role ou authenticated)
   next();
 };
 
 // --- CONTROL PLANE EXTENSIONS ---
 
-// Helper para descobrir IP atual do usuário
-// Fix: Explicitly use 'any' type for req and res parameters to resolve ambiguous 'Request' and 'Response' type definitions and ensure access to standard express properties.
 app.get('/api/control/me/ip', (req: any, res: any) => {
   const ip = req.headers['x-forwarded-for'] || (req as any).socket?.remoteAddress;
   res.json({ ip });
 });
 
-// Bloquear IP
 app.post('/api/control/projects/:slug/block-ip', cascataAuth as any, async (req, res) => {
   const { ip } = req.body;
   await systemPool.query(
@@ -220,7 +190,6 @@ app.post('/api/control/projects/:slug/block-ip', cascataAuth as any, async (req,
   res.json({ success: true });
 });
 
-// Desbloquear IP
 app.post('/api/control/projects/:slug/unblock-ip', cascataAuth as any, async (req, res) => {
   const { ip } = req.body;
   await systemPool.query(
@@ -230,7 +199,6 @@ app.post('/api/control/projects/:slug/unblock-ip', cascataAuth as any, async (re
   res.json({ success: true });
 });
 
-// Limpeza de Logs
 app.delete('/api/control/projects/:slug/logs', cascataAuth as any, async (req, res) => {
   const { days } = req.query;
   const interval = `${days} days`;
@@ -241,7 +209,6 @@ app.delete('/api/control/projects/:slug/logs', cascataAuth as any, async (req, r
   res.json({ success: true });
 });
 
-// Configurar Retenção
 app.patch('/api/control/projects/:slug/settings', cascataAuth as any, async (req, res) => {
   const { log_retention_days } = req.body;
   await systemPool.query('UPDATE system.projects SET log_retention_days = $1 WHERE slug = $2', [log_retention_days, req.params.slug]);
@@ -362,7 +329,6 @@ const validateGovernance = (req: any, fileName: string, fileSize: number) => {
 
 // --- DATA PLANE STORAGE EXTENDED ---
 
-// Listar Buckets (Pastas raiz)
 app.get('/api/data/:slug/storage/buckets', cascataAuth as any, async (req: any, res: any) => {
   const p = path.join(STORAGE_ROOT, req.project.slug);
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
@@ -370,7 +336,6 @@ app.get('/api/data/:slug/storage/buckets', cascataAuth as any, async (req: any, 
   res.json(items.map(name => ({ name })));
 });
 
-// Criar Bucket
 app.post('/api/data/:slug/storage/buckets', cascataAuth as any, async (req: any, res: any) => {
   const { name } = req.body;
   const p = path.join(STORAGE_ROOT, req.project.slug, name);
@@ -378,7 +343,6 @@ app.post('/api/data/:slug/storage/buckets', cascataAuth as any, async (req: any,
   res.json({ success: true });
 });
 
-// Listar Conteúdo (Arquivos e Subpastas)
 app.get('/api/data/:slug/storage/:bucket/list', cascataAuth as any, async (req: any, res: any) => {
   const subPath = req.query.path || '';
   const p = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, subPath as string);
@@ -398,7 +362,6 @@ app.get('/api/data/:slug/storage/:bucket/list', cascataAuth as any, async (req: 
   res.json({ items });
 });
 
-// Criar Pasta
 app.post('/api/data/:slug/storage/:bucket/folder', cascataAuth as any, async (req: any, res: any) => {
   const { name, path: targetPath } = req.body;
   const p = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, targetPath || '', name);
@@ -406,7 +369,6 @@ app.post('/api/data/:slug/storage/:bucket/folder', cascataAuth as any, async (re
   res.json({ success: true });
 });
 
-// Duplicar Objeto (Arquivo ou Pasta)
 app.post('/api/data/:slug/storage/:bucket/duplicate', cascataAuth as any, async (req: any, res: any) => {
   const { targetPath } = req.body;
   const source = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, targetPath);
@@ -427,7 +389,6 @@ app.post('/api/data/:slug/storage/:bucket/duplicate', cascataAuth as any, async 
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-// Upload com Governança Unificada
 app.post('/api/data/:slug/storage/:bucket/upload', cascataAuth as any, upload.single('file') as any, async (req: any, res: any) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
 
@@ -445,7 +406,6 @@ app.post('/api/data/:slug/storage/:bucket/upload', cascataAuth as any, upload.si
   res.json({ success: true });
 });
 
-// Mover Objeto
 app.patch('/api/data/:slug/storage/:bucket/object', cascataAuth as any, async (req: any, res: any) => {
   const { oldPath, newPath } = req.body;
   const oldFull = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, oldPath);
@@ -458,7 +418,6 @@ app.patch('/api/data/:slug/storage/:bucket/object', cascataAuth as any, async (r
   } else res.status(404).json({ error: 'Not found' });
 });
 
-// Renomear (Arquivo ou Pasta)
 app.patch('/api/data/:slug/storage/:bucket/rename', cascataAuth as any, async (req: any, res: any) => {
   const { oldPath, newName } = req.body;
   const oldFull = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, oldPath);
@@ -473,17 +432,14 @@ app.patch('/api/data/:slug/storage/:bucket/rename', cascataAuth as any, async (r
   } else res.status(404).json({ error: 'Target not found' });
 });
 
-// Download Zip (Simulado - Requer implementação de stream de zip no ambiente)
 app.get('/api/data/:slug/storage/:bucket/zip', cascataAuth as any, async (req: any, res: any) => {
   const targetPath = req.query.path as string;
   const full = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, targetPath);
   if (fs.existsSync(full) && fs.lstatSync(full).isDirectory()) {
-    // Aqui seria usado archiver ou adm-zip
     res.status(501).json({ error: 'ZIP Engine requires server-side compression module. Logic ready.' });
   } else res.status(404).json({ error: 'Folder not found' });
 });
 
-// CRUD de Políticas de Pasta
 app.post('/api/data/:slug/storage/policies', cascataAuth as any, async (req: any, res: any) => {
   const { folderPath, policy } = req.body;
   const project = req.project;
@@ -495,7 +451,6 @@ app.post('/api/data/:slug/storage/policies', cascataAuth as any, async (req: any
   res.json({ success: true });
 });
 
-// Deletar
 app.delete('/api/data/:slug/storage/:bucket/object', cascataAuth as any, async (req: any, res: any) => {
   const target = req.query.path as string;
   const full = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, target);
@@ -506,7 +461,6 @@ app.delete('/api/data/:slug/storage/:bucket/object', cascataAuth as any, async (
   } else res.status(404).json({ error: 'Not found' });
 });
 
-// Servir (Download/Visualização)
 app.get('/api/data/:slug/storage/:bucket/object/:path(*)', cascataAuth as any, async (req: any, res: any) => {
   const full = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, req.params.path);
   if (fs.existsSync(full) && !fs.lstatSync(full).isDirectory()) {
@@ -610,7 +564,7 @@ app.post('/api/data/:slug/tables/:table/rows', cascataAuth as any, async (req: a
   const keys = Object.keys(data);
   const values = Object.values(data);
   const cols = keys.map(k => `"${k}"`).join(',');
-  const placeholders = keys.map((_, i) => `$${i + 1}`).join(',');
+  const placeholders = keys.map((_, i) => `${i + 1}`).join(',');
   try { await req.projectPool.query(`INSERT INTO public."${table}" (${cols}) VALUES (${placeholders})`, values); res.json({ success: true }); } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
@@ -618,9 +572,9 @@ app.put('/api/data/:slug/tables/:table/rows', cascataAuth as any, async (req: an
   const { table } = req.params;
   const { data, pkColumn, pkValue } = req.body;
   const keys = Object.keys(data).filter(k => k !== pkColumn);
-  const setClause = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
+  const setClause = keys.map((k, i) => `"${k}" = ${i + 1}`).join(', ');
   const values = [...keys.map(k => data[k]), pkValue];
-  try { await req.projectPool.query(`UPDATE public."${table}" SET ${setClause} WHERE "${pkColumn}" = $${values.length}`, values); res.json({ success: true }); } catch (e: any) { res.status(400).json({ error: e.message }); }
+  try { await req.projectPool.query(`UPDATE public."${table}" SET ${setClause} WHERE "${pkColumn}" = ${values.length}`, values); res.json({ success: true }); } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
 app.post('/api/data/:slug/tables/:table/delete-rows', cascataAuth as any, async (req: any, res: any) => {
@@ -638,14 +592,57 @@ app.get('/api/data/:slug/triggers', cascataAuth as any, async (req: any, res: an
   res.json(result.rows);
 });
 
+// --- AUTH ROUTES (ATUALIZADOS COM USER MAPPING) ---
+
 app.get('/api/data/:slug/auth/users', cascataAuth as any, async (req: any, res: any) => {
-  const result = await req.projectPool.query('SELECT id, email, created_at FROM auth.users');
+  const result = await req.projectPool.query('SELECT id, email, created_at FROM auth.users ORDER BY created_at DESC');
   res.json(result.rows);
 });
 
 app.post('/api/data/:slug/auth/users', cascataAuth as any, async (req: any, res: any) => {
-  const { email, password } = req.body;
-  try { await req.projectPool.query('INSERT INTO auth.users (email, password_hash) VALUES ($1, $2)', [email, password]); res.json({ success: true }); } catch (e: any) { res.status(400).json({ error: e.message }); }
+  const { email, password, target_table } = req.body;
+  const client = await req.projectPool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    // 1. Criar usuário no schema auth
+    const userRes = await client.query(
+      'INSERT INTO auth.users (email, password_hash) VALUES ($1, $2) RETURNING id',
+      [email, password]
+    );
+    const userId = userRes.rows[0].id;
+
+    // 2. Verificar Mapeamento (User Linking)
+    const mapping = req.project.metadata?.user_table_mapping;
+    const tableToLink = target_table || mapping?.principal_table;
+
+    if (tableToLink) {
+      // Cria o registro correspondente na tabela pública mapeada
+      await client.query(`INSERT INTO public."${tableToLink}" (id, email) VALUES ($1, $2)`, [userId, email]);
+    }
+
+    await client.query('COMMIT');
+    res.json({ id: userId, email, success: true });
+  } catch (e: any) {
+    await client.query('ROLLBACK');
+    res.status(400).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Salvar metadados de mapeamento
+app.post('/api/data/:slug/auth/mapping', cascataAuth as any, async (req: any, res: any) => {
+  const { principal_table, additional_tables } = req.body;
+  const metadata = req.project.metadata || {};
+  metadata.user_table_mapping = { principal_table, additional_tables };
+  
+  await systemPool.query(
+    'UPDATE system.projects SET metadata = $1 WHERE slug = $2',
+    [JSON.stringify(metadata), req.params.slug]
+  );
+  res.json({ success: true });
 });
 
 app.get('/api/data/:slug/stats', cascataAuth as any, async (req: any, res: any) => {

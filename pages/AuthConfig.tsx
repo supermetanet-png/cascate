@@ -1,28 +1,61 @@
-import React, { useState, useEffect } from 'react';
-import { Mail, Globe, ShieldCheck, UserPlus, Lock, Key, Loader2, Calendar, MoreHorizontal, User, AlertCircle, Info } from 'lucide-react';
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { 
+  Mail, Globe, ShieldCheck, UserPlus, Lock, Key, Loader2, 
+  Calendar, MoreHorizontal, User, AlertCircle, Info, Link2,
+  X, Search, CheckCircle2, Star, Database, ArrowRight, Sparkles,
+  ChevronRight, Shield, Settings
+} from 'lucide-react';
 
 const AuthConfig: React.FC<{ projectId: string }> = ({ projectId }) => {
   const [emailAuth, setEmailAuth] = useState(true);
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddUser, setShowAddUser] = useState(false);
-  const [newUser, setNewUser] = useState({ email: '', password: '' });
+  const [showMappingModal, setShowMappingModal] = useState(false);
+  const [newUser, setNewUser] = useState({ email: '', password: '', target_table: '' });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
-  const fetchUsers = async () => {
+  // Mapping State
+  const [tables, setTables] = useState<any[]>([]);
+  const [tableSearch, setTableSearch] = useState('');
+  const [mapping, setMapping] = useState({
+    principal_table: '',
+    additional_tables: [] as string[]
+  });
+
+  const fetchWithAuth = useCallback(async (url: string, options: any = {}) => {
+    const token = localStorage.getItem('cascata_token');
+    const response = await fetch(url, {
+      ...options,
+      headers: { ...options.headers, 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+    });
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.error || 'Failed request');
+    }
+    return response.json();
+  }, []);
+
+  const fetchData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`/api/data/${projectId}/auth/users`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('cascata_token')}` }
-      });
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || 'Failed to fetch users');
+      const [usersData, projectsData, tablesData] = await Promise.all([
+        fetchWithAuth(`/api/data/${projectId}/auth/users`),
+        fetchWithAuth('/api/control/projects'),
+        fetchWithAuth(`/api/data/${projectId}/tables`)
+      ]);
+      
+      setUsers(usersData);
+      setTables(tablesData);
+      
+      const proj = projectsData.find((p: any) => p.slug === projectId);
+      if (proj?.metadata?.user_table_mapping) {
+        setMapping(proj.metadata.user_table_mapping);
       }
-      const data = await response.json();
-      setUsers(data);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -30,25 +63,40 @@ const AuthConfig: React.FC<{ projectId: string }> = ({ projectId }) => {
     }
   };
 
+  const handleSaveMapping = async () => {
+    if (!mapping.principal_table) {
+      setError("É obrigatório escolher uma tabela principal para o mapeamento.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await fetchWithAuth(`/api/data/${projectId}/auth/mapping`, {
+        method: 'POST',
+        body: JSON.stringify(mapping)
+      });
+      setSuccess("Mapeamento de usuários sincronizado.");
+      setShowMappingModal(false);
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
     try {
-      const response = await fetch(`/api/data/${projectId}/auth/users`, {
+      await fetchWithAuth(`/api/data/${projectId}/auth/users`, {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('cascata_token')}`
-        },
         body: JSON.stringify(newUser)
       });
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || 'Failed to create user');
-      }
+      setSuccess("Usuário e perfil vinculados com sucesso.");
       setShowAddUser(false);
-      setNewUser({ email: '', password: '' });
+      setNewUser({ email: '', password: '', target_table: '' });
       fetchUsers();
+      setTimeout(() => setSuccess(null), 3000);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -56,49 +104,63 @@ const AuthConfig: React.FC<{ projectId: string }> = ({ projectId }) => {
     }
   };
 
-  useEffect(() => {
-    fetchUsers();
-  }, [projectId]);
+  const fetchUsers = async () => {
+    try {
+      const data = await fetchWithAuth(`/api/data/${projectId}/auth/users`);
+      setUsers(data);
+    } catch (err: any) { setError(err.message); }
+  };
+
+  useEffect(() => { fetchData(); }, [projectId]);
+
+  const filteredTables = tables.filter(t => t.name.toLowerCase().includes(tableSearch.toLowerCase()));
 
   return (
     <div className="p-8 lg:p-12 max-w-6xl mx-auto w-full space-y-12 pb-32">
+      {/* Toast Notifications */}
+      {(error || success) && (
+        <div className={`fixed top-8 left-1/2 -translate-x-1/2 z-[1000] p-5 rounded-3xl shadow-2xl flex items-center gap-4 animate-in slide-in-from-top-4 ${error ? 'bg-rose-600 text-white' : 'bg-indigo-600 text-white'}`}>
+          {error ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
+          <span className="text-sm font-black tracking-tight">{error || success}</span>
+          <button onClick={() => { setError(null); setSuccess(null); }} className="ml-4 opacity-50"><X size={16} /></button>
+        </div>
+      )}
+
       <div className="flex items-end justify-between gap-8">
         <div>
           <h2 className="text-4xl font-black text-slate-900 tracking-tight">Identity Services</h2>
           <p className="text-slate-500 mt-2 text-lg">Manage users and authentication providers for {projectId}.</p>
         </div>
-        <button 
-          onClick={() => setShowAddUser(true)}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-2xl font-black flex items-center gap-2 transition-all shadow-xl shadow-indigo-100 hover:-translate-y-0.5"
-        >
-          <UserPlus size={20} /> CREATE USER
-        </button>
+        <div className="flex items-center gap-4">
+          <button 
+            onClick={() => setShowMappingModal(true)}
+            className="bg-white border border-slate-200 text-slate-600 px-6 py-3 rounded-2xl font-black flex items-center gap-2 hover:bg-slate-50 transition-all shadow-sm"
+          >
+            <Link2 size={20} /> LINKAR USER
+          </button>
+          <button 
+            onClick={() => setShowAddUser(true)}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-2xl font-black flex items-center gap-2 transition-all shadow-xl shadow-indigo-100 hover:-translate-y-0.5"
+          >
+            <UserPlus size={20} /> CREATE USER
+          </button>
+        </div>
       </div>
 
-      {/* Identity Separation Notice */}
       <div className="bg-slate-900 rounded-[2.5rem] p-8 text-white flex items-center gap-8 border border-white/5 relative overflow-hidden">
          <div className="absolute top-0 right-0 p-8 opacity-10"><ShieldCheck size={140} /></div>
          <div className="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center backdrop-blur-md">
             <Info size={32} className="text-indigo-400" />
          </div>
          <div className="relative z-10">
-            <h4 className="font-black text-lg uppercase tracking-tight mb-1">Identity Separation Warning</h4>
+            <h4 className="font-black text-lg uppercase tracking-tight mb-1">Identity Separation & Mapping</h4>
             <p className="text-slate-400 text-sm font-medium leading-relaxed max-w-2xl">
-              These are the end-users of the application <b>"{projectId}"</b>. They exist in the isolated <code>auth.users</code> table of this instance and <b>do not</b> have access to the Cascata Management Studio.
+              Usuários do projeto <b>"{projectId}"</b> residem no esquema isolado. Vincule-os a tabelas do esquema <code>public</code> para gerenciar perfis, cargos e RLS granulares.
             </p>
          </div>
       </div>
 
-      {error && (
-        <div className="bg-rose-50 border border-rose-100 p-6 rounded-[2rem] flex items-center gap-4 text-rose-600">
-          <AlertCircle size={24} />
-          <span className="text-sm font-bold uppercase tracking-widest">{error}</span>
-          <button onClick={() => fetchUsers()} className="ml-auto bg-rose-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Retry Connection</button>
-        </div>
-      )}
-
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* User List Table */}
         <div className="lg:col-span-2 space-y-6">
           <div className="flex items-center justify-between px-4">
             <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
@@ -165,53 +227,115 @@ const AuthConfig: React.FC<{ projectId: string }> = ({ projectId }) => {
           </div>
         </div>
 
-        {/* Auth Settings Panel */}
         <div className="space-y-8">
           <div className="bg-white border border-slate-200 rounded-[2.5rem] p-8 shadow-sm space-y-8">
              <div className="flex items-center justify-between">
-                <h3 className="font-black text-slate-900 uppercase tracking-tight">Configuration</h3>
+                <h3 className="font-black text-slate-900 uppercase tracking-tight">Mapping Status</h3>
                 <Settings size={20} className="text-slate-300" />
              </div>
 
              <section className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <Mail size={18} className="text-indigo-600" />
-                    <span className="text-sm font-bold text-slate-700">Email Auth</span>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" checked={emailAuth} onChange={(e) => setEmailAuth(e.target.checked)} className="sr-only peer" />
-                    <div className="w-10 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
-                  </label>
+                <div className="flex flex-col gap-2">
+                   <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Tabela Principal (Auth Map)</span>
+                   <div className="flex items-center gap-3 p-4 bg-indigo-50 border border-indigo-100 rounded-2xl">
+                      <Database size={16} className="text-indigo-600" />
+                      <span className="text-sm font-black text-indigo-900">{mapping.principal_table || 'Nenhuma tabela mapeada'}</span>
+                   </div>
                 </div>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <Globe size={18} className="text-rose-500" />
-                    <span className="text-sm font-bold text-slate-700">Google OAuth</span>
+                
+                {mapping.additional_tables.length > 0 && (
+                  <div className="flex flex-col gap-2">
+                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Tabelas Alternativas</span>
+                    <div className="flex flex-wrap gap-2">
+                       {mapping.additional_tables.map(t => (
+                         <span key={t} className="px-3 py-1 bg-slate-50 border border-slate-200 rounded-lg text-[10px] font-bold text-slate-600">{t}</span>
+                       ))}
+                    </div>
                   </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" className="sr-only peer" />
-                    <div className="w-10 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
-                  </label>
-                </div>
+                )}
              </section>
 
              <div className="pt-6 border-t border-slate-100">
                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Instance Security</p>
                <div className="p-4 bg-slate-50 border border-slate-100 rounded-2xl">
-                 <p className="text-xs text-slate-600 leading-relaxed font-medium">JWT signing for {projectId} uses a dedicated 256-bit secret stored in the Control Plane.</p>
+                 <p className="text-xs text-slate-600 leading-relaxed font-medium">Cada novo usuário criará automaticamente um registro em <code>{mapping.principal_table}</code> vinculando via ID.</p>
                </div>
              </div>
           </div>
         </div>
       </div>
 
+      {/* MAPPING MODAL (FLUTTERFLOW STYLE) */}
+      {showMappingModal && (
+        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-2xl z-[1100] flex items-center justify-center p-8 animate-in fade-in duration-300">
+          <div className="bg-white rounded-[4rem] w-full max-w-4xl overflow-hidden flex flex-col shadow-2xl border border-slate-100 animate-in zoom-in-95">
+             <header className="p-10 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                <div className="flex items-center gap-6">
+                  <div className="w-16 h-16 bg-slate-900 text-white rounded-[1.8rem] flex items-center justify-center shadow-xl"><Link2 size={32} /></div>
+                  <div><h3 className="text-3xl font-black text-slate-900 tracking-tighter">User Data Mapping</h3><p className="text-[10px] text-indigo-600 font-bold uppercase tracking-widest">Conecte o Auth ao esquema Public</p></div>
+                </div>
+                <button onClick={() => setShowMappingModal(false)} className="p-4 hover:bg-slate-200 rounded-full transition-all text-slate-400"><X size={32} /></button>
+             </header>
+
+             <div className="flex-1 overflow-hidden flex flex-col p-12 bg-white space-y-8">
+                <div className="bg-indigo-50 p-8 rounded-[2.5rem] border border-indigo-100 flex gap-6">
+                   <Sparkles className="text-indigo-600 shrink-0" size={32} />
+                   <p className="text-sm text-indigo-900 font-medium leading-relaxed">
+                     Escolha quais tabelas do esquema <code>public</code> representarão os dados extras dos seus usuários (Perfis, Configurações). Marque a tabela <b>Estrela</b> como principal.
+                   </p>
+                </div>
+
+                <div className="relative group">
+                   <Search className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                   <input value={tableSearch} onChange={e => setTableSearch(e.target.value)} placeholder="Pesquisar tabelas públicas..." className="w-full pl-16 pr-8 py-5 bg-slate-50 border border-slate-200 rounded-[2rem] text-sm font-bold outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all" />
+                </div>
+
+                <div className="flex-1 overflow-y-auto space-y-3 pr-4">
+                   {filteredTables.map(table => (
+                     <div key={table.name} className={`group flex items-center justify-between p-6 rounded-[1.8rem] border transition-all ${mapping.principal_table === table.name ? 'bg-indigo-600 border-indigo-700 text-white shadow-xl' : mapping.additional_tables.includes(table.name) ? 'bg-indigo-50 border-indigo-200 text-indigo-900' : 'bg-white border-slate-100 hover:border-indigo-300'}`}>
+                        <div className="flex items-center gap-6">
+                           <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${mapping.principal_table === table.name ? 'bg-white/20' : 'bg-slate-50'}`}><Database size={20} /></div>
+                           <div><span className="text-sm font-black uppercase tracking-tight">{table.name}</span><p className={`text-[10px] uppercase font-bold tracking-widest ${mapping.principal_table === table.name ? 'text-indigo-100' : 'text-slate-400'}`}>{mapping.principal_table === table.name ? 'Tabela Principal' : 'Clique para vincular'}</p></div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                           <button 
+                             onClick={() => {
+                               const current = mapping.additional_tables;
+                               const next = current.includes(table.name) ? current.filter(t => t !== table.name) : [...current, table.name];
+                               setMapping({ ...mapping, additional_tables: next });
+                             }}
+                             className={`p-3 rounded-xl transition-all ${mapping.additional_tables.includes(table.name) ? 'bg-indigo-400 text-white' : 'bg-slate-100 text-slate-300 hover:bg-slate-200'}`}
+                           >
+                             <CheckCircle2 size={18} />
+                           </button>
+                           <button 
+                             onClick={() => setMapping({ ...mapping, principal_table: table.name, additional_tables: [...new Set([...mapping.additional_tables, table.name])] })}
+                             className={`p-3 rounded-xl transition-all ${mapping.principal_table === table.name ? 'bg-white text-indigo-600' : 'bg-slate-100 text-slate-300 hover:bg-indigo-100 hover:text-indigo-600'}`}
+                           >
+                             <Star size={18} fill={mapping.principal_table === table.name ? 'currentColor' : 'none'} />
+                           </button>
+                        </div>
+                     </div>
+                   ))}
+                </div>
+             </div>
+
+             <footer className="p-10 bg-slate-50 border-t border-slate-100 flex gap-6">
+                <button onClick={() => setShowMappingModal(false)} className="flex-1 py-6 text-slate-400 font-black uppercase text-xs">Descartar</button>
+                <button onClick={handleSaveMapping} className="flex-[3] py-6 bg-slate-900 text-white rounded-[2rem] text-xs font-black uppercase shadow-2xl hover:bg-indigo-600 transition-all flex items-center justify-center gap-4">
+                  {submitting ? <Loader2 className="animate-spin" /> : <><Sparkles size={18} /> Sincronizar Mapeamento</>}
+                </button>
+             </footer>
+          </div>
+        </div>
+      )}
+
       {/* Manual User Creation Modal */}
       {showAddUser && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[100] flex items-center justify-center p-6 animate-in fade-in duration-300">
-          <div className="bg-white rounded-[3rem] w-full max-md:p-8 p-10 shadow-2xl border border-slate-200 animate-in zoom-in-95 duration-300">
-            <h2 className="text-2xl font-black text-slate-900 mb-2">New Identity</h2>
-            <p className="text-slate-500 mb-8 text-sm">Add a user manually to the auth.users table of this project.</p>
+          <div className="bg-white rounded-[3rem] w-full max-w-xl max-md:p-8 p-10 shadow-2xl border border-slate-200 animate-in zoom-in-95 duration-300">
+            <h2 className="text-3xl font-black text-slate-900 mb-2 tracking-tighter">New Identity</h2>
+            <p className="text-slate-500 mb-8 text-sm">Add a user manually and sync to the mapped public table.</p>
             
             <form onSubmit={handleCreateUser} className="space-y-6">
               <div className="space-y-2">
@@ -222,7 +346,7 @@ const AuthConfig: React.FC<{ projectId: string }> = ({ projectId }) => {
                     type="email" 
                     value={newUser.email}
                     onChange={(e) => setNewUser({...newUser, email: e.target.value})}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-3.5 pl-12 pr-4 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all font-bold text-slate-800"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-4 pl-12 pr-4 focus:outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all font-bold text-slate-800"
                     placeholder="user@example.com"
                     required
                   />
@@ -236,12 +360,28 @@ const AuthConfig: React.FC<{ projectId: string }> = ({ projectId }) => {
                     type="password" 
                     value={newUser.password}
                     onChange={(e) => setNewUser({...newUser, password: e.target.value})}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-3.5 pl-12 pr-4 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all font-bold text-slate-800"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-4 pl-12 pr-4 focus:outline-none focus:ring-4 focus:ring-indigo-500/10 transition-all font-bold text-slate-800"
                     placeholder="••••••••"
                     required
                   />
                 </div>
               </div>
+
+              {mapping.additional_tables.length > 0 && (
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Connection Table (Target)</label>
+                  <select 
+                    value={newUser.target_table}
+                    onChange={e => setNewUser({...newUser, target_table: e.target.value})}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-4 px-6 text-xs font-black text-indigo-600 outline-none"
+                  >
+                    <option value="">Default ({mapping.principal_table || 'None'})</option>
+                    {mapping.additional_tables.map(t => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               
               <div className="flex gap-4 pt-4">
                 <button type="button" onClick={() => setShowAddUser(false)} className="flex-1 py-4 text-slate-500 font-bold hover:bg-slate-50 rounded-2xl transition-all uppercase tracking-widest text-[10px]">Cancel</button>
@@ -250,7 +390,7 @@ const AuthConfig: React.FC<{ projectId: string }> = ({ projectId }) => {
                   disabled={submitting}
                   className="flex-[2] py-4 bg-indigo-600 text-white font-black rounded-2xl shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all uppercase tracking-widest text-[10px] flex items-center justify-center gap-2"
                 >
-                  {submitting ? <Loader2 size={16} className="animate-spin" /> : 'Create Identity'}
+                  {submitting ? <Loader2 size={16} className="animate-spin" /> : <><Shield size={16} /> Create & Sync Identity</>}
                 </button>
               </div>
             </form>
@@ -261,8 +401,14 @@ const AuthConfig: React.FC<{ projectId: string }> = ({ projectId }) => {
   );
 };
 
-const Settings: React.FC<any> = (props) => (
-  <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+const PolicyCard = ({ active, icon, label, desc, onClick }: any) => (
+  <button 
+    onClick={onClick}
+    className={`p-8 rounded-[2.5rem] border-2 transition-all flex flex-col items-center text-center gap-4 ${active ? 'bg-indigo-600 border-indigo-700 text-white shadow-2xl shadow-indigo-200' : 'bg-white border-slate-100 text-slate-400 hover:border-slate-200'}`}
+  >
+    <div className={`w-16 h-16 rounded-2xl flex items-center justify-center ${active ? 'bg-white/20' : 'bg-slate-50'}`}>{icon}</div>
+    <div><h5 className="font-black text-sm uppercase tracking-tight">{label}</h5><p className={`text-[10px] mt-1 font-medium ${active ? 'text-indigo-100' : 'text-slate-400'}`}>{desc}</p></div>
+  </button>
 );
 
 export default AuthConfig;
