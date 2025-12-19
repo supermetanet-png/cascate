@@ -5,7 +5,6 @@ import pg from 'pg';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
-import path from 'path';
 
 dotenv.config();
 
@@ -19,9 +18,9 @@ const PORT = process.env.PORT || 3000;
 
 const generateKey = () => crypto.randomBytes(32).toString('hex');
 
-// --- MIDDLEWARES DE SEGURANÇA ---
+// --- MIDDLEWARES ESTRUTURAIS ---
 
-const domainLocking = async (req: any, res: any, next: NextFunction) => {
+const securityMaster = async (req: any, res: any, next: NextFunction) => {
   const host = req.headers.host || '';
   const isIP = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/.test(host.split(':')[0]);
 
@@ -29,14 +28,27 @@ const domainLocking = async (req: any, res: any, next: NextFunction) => {
     const configResult = await systemPool.query("SELECT value FROM system.config WHERE key = 'global_domain'");
     const globalDomain = configResult.rows[0]?.value;
 
-    // Regra: Se houver domínio global, o acesso por IP é proibido
-    if (globalDomain && isIP) {
-      return res.status(403).json({ error: 'System Locked: Access via IP is disabled. Use the configured global domain.' });
+    // Lógica Obrigatória: IP só funciona até configurar domínio
+    if (globalDomain) {
+      if (isIP) {
+        return res.status(403).json({ error: 'Cascata Locked: Use the authorized domain to access management.' });
+      }
+      if (host !== globalDomain && !req.path.startsWith('/api/data/')) {
+        return res.status(403).json({ error: 'Domain Binding Violation.' });
+      }
     }
 
-    // Regra: Se houver domínio global e o host for diferente, bloqueia (ataque de domínio aleatório)
-    if (globalDomain && host !== globalDomain && !req.path.startsWith('/api/data/')) {
-      return res.status(403).json({ error: 'Domain Binding Violation.' });
+    // Auth especial para Login
+    if (req.path === '/api/control/auth/login') return next();
+
+    // Proteção Control Plane
+    if (req.path.includes('/control/')) {
+      const authHeader = req.headers['authorization'];
+      if (!authHeader) return res.status(401).json({ error: 'Admin token missing' });
+      try {
+        jwt.verify(authHeader.split(' ')[1], process.env.SYSTEM_JWT_SECRET || 'secret');
+        return next();
+      } catch (e) { return res.status(401).json({ error: 'Session expired' }); }
     }
 
     next();
@@ -51,69 +63,43 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
   const slugFromUrl = pathParts[3]; 
 
   try {
-    // 1. Tenta resolver por domínio customizado
+    // 1. Resolver por domínio customizado do projeto
     let projectResult = await systemPool.query('SELECT * FROM system.projects WHERE custom_domain = $1', [host]);
     
     if (projectResult.rowCount > 0) {
       req.project = projectResult.rows[0];
     } else if (slugFromUrl) {
-      // 2. Tenta resolver por slug
+      // 2. Resolver por slug (apenas se o projeto NÃO tiver domínio próprio)
       projectResult = await systemPool.query('SELECT * FROM system.projects WHERE slug = $1', [slugFromUrl]);
       const proj = projectResult.rows[0];
       
-      if (proj) {
-        // Se o projeto tem domínio próprio, proíbe acesso via slug/IP compartilhado
-        if (proj.custom_domain && host !== proj.custom_domain) {
-          return res.status(403).json({ error: 'Project locked to its custom domain.' });
-        }
-        req.project = proj;
+      if (proj && proj.custom_domain && host !== proj.custom_domain) {
+        return res.status(403).json({ error: 'This project is locked to its private domain.' });
       }
+      req.project = proj;
     }
 
-    if (!req.project && req.path.startsWith('/api/data/')) {
-      return res.status(404).json({ error: 'Project context not found.' });
-    }
-
-    if (req.project) {
-      req.projectPool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${req.project.db_name}`) });
-    }
-    next();
-  } catch (e) { res.status(500).json({ error: 'Resolution Error' }); }
-};
-
-const cascataAuth = async (req: any, res: any, next: NextFunction) => {
-  if (req.path === '/api/control/auth/login') return next();
-
-  if (req.path.includes('/control/')) {
-    const authHeader = req.headers['authorization'];
-    if (!authHeader) return res.status(401).json({ error: 'Unauthorized' });
-    try {
-      jwt.verify(authHeader.split(' ')[1], process.env.SYSTEM_JWT_SECRET || 'secret');
+    if (!req.project) {
+      if (req.path.startsWith('/api/data/')) return res.status(404).json({ error: 'Instance not found.' });
       return next();
-    } catch (e) { return res.status(401).json({ error: 'Invalid Session' }); }
-  }
+    }
 
-  // Auth para o Data Plane
-  const apikey = req.headers['apikey'] || req.query.apikey || req.headers['authorization']?.split(' ')[1];
-  if (apikey === req.project?.service_key) { req.userRole = 'service_role'; return next(); }
-  if (apikey === req.project?.anon_key) { req.userRole = 'anon'; return next(); }
+    // Conectar ao pool isolado do projeto
+    req.projectPool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${req.project.db_name}`) });
+    
+    // Auth Data Plane (API Keys)
+    const apikey = req.headers['apikey'] || req.query.apikey || req.headers['authorization']?.split(' ')[1];
+    if (apikey === req.project.service_key) req.userRole = 'service_role';
+    else if (apikey === req.project.anon_key) req.userRole = 'anon';
 
-  const authHeader = req.headers['authorization'];
-  if (authHeader) {
-    try {
-      const decoded = jwt.verify(authHeader.split(' ')[1], req.project.jwt_secret);
-      req.user = decoded; 
-      req.userRole = 'authenticated';
-    } catch (e) {}
-  }
-  next();
+    next();
+  } catch (e) { res.status(500).json({ error: 'Context Resolution Error' }); }
 };
 
-app.use(domainLocking as any);
+app.use(securityMaster as any);
 app.use(resolveProject as any);
-app.use(cascataAuth as any);
 
-// --- ROTAS DO CONTROL PLANE ---
+// --- CONTROL PLANE (ADMIN) ---
 
 app.post('/api/control/auth/login', async (req: any, res: any) => {
   const { email, password } = req.body;
@@ -122,7 +108,13 @@ app.post('/api/control/auth/login', async (req: any, res: any) => {
   if (admin && admin.password_hash === password) {
     const token = jwt.sign({ sub: admin.id, role: 'admin' }, process.env.SYSTEM_JWT_SECRET || 'secret');
     res.json({ token });
-  } else res.status(401).json({ error: 'Invalid credentials' });
+  } else res.status(401).json({ error: 'Credentials failure' });
+});
+
+app.post('/api/control/system/config', async (req: any, res: any) => {
+  const { key, value } = req.body;
+  await systemPool.query('INSERT INTO system.config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2', [key, value]);
+  res.json({ success: true });
 });
 
 app.get('/api/control/projects', async (req: any, res: any) => {
@@ -152,41 +144,34 @@ app.patch('/api/control/projects/:slug', async (req: any, res: any) => {
   res.json(result.rows[0]);
 });
 
-app.post('/api/control/system/config', async (req: any, res: any) => {
-  const { key, value } = req.body;
-  await systemPool.query('INSERT INTO system.config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now()', [key, value]);
-  res.json({ success: true });
-});
-
 app.get('/api/control/projects/:slug/webhooks', async (req: any, res: any) => {
   const result = await systemPool.query('SELECT * FROM system.webhooks WHERE project_slug = $1', [req.params.slug]);
   res.json(result.rows);
 });
 
-// --- ROTAS DO DATA PLANE (O QUE ESTAVA QUEBRADO) ---
+// --- DATA PLANE (RESTORED & FIXED ROUTES) ---
 
-// 1. Logs de API
+// 1. Observability (Logs)
 app.get('/api/data/:slug/logs', async (req: any, res: any) => {
   const result = await systemPool.query('SELECT * FROM system.api_logs WHERE project_slug = $1 ORDER BY created_at DESC LIMIT 100', [req.params.slug]);
   res.json(result.rows);
 });
 
-// 2. Assets (Metadados do Studio)
+// 2. Identity (Auth Users)
+app.get('/api/data/:slug/auth/users', async (req: any, res: any) => {
+  try {
+    const result = await req.projectPool.query("SELECT id, email, created_at FROM auth.users");
+    res.json(result.rows);
+  } catch (e) { res.json([]); }
+});
+
+// 3. Logic Assets (Metadata)
 app.get('/api/data/:slug/assets', async (req: any, res: any) => {
   const result = await systemPool.query('SELECT * FROM system.assets WHERE project_slug = $1', [req.params.slug]);
   res.json(result.rows);
 });
 
-app.post('/api/data/:slug/assets', async (req: any, res: any) => {
-  const { name, type, parent_id, metadata } = req.body;
-  const result = await systemPool.query(
-    'INSERT INTO system.assets (project_slug, name, type, parent_id, metadata) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-    [req.params.slug, name, type, parent_id, metadata]
-  );
-  res.json(result.rows[0]);
-});
-
-// 3. Funções Físicas (pg_proc)
+// 4. Physical Schema Objects (Functions, Triggers, Policies)
 app.get('/api/data/:slug/functions', async (req: any, res: any) => {
   const result = await req.projectPool.query(`
     SELECT n.nspname as schema, p.proname as name, pg_get_function_result(p.oid) as return_type
@@ -196,27 +181,17 @@ app.get('/api/data/:slug/functions', async (req: any, res: any) => {
   res.json(result.rows);
 });
 
-// 4. Triggers Físicos
 app.get('/api/data/:slug/triggers', async (req: any, res: any) => {
-  const result = await req.projectPool.query(`SELECT tgname as name, relname as table FROM pg_trigger JOIN pg_class ON pg_trigger.tgrelid = pg_class.oid WHERE NOT tgisinternal`);
+  const result = await req.projectPool.query(`SELECT tgname as name, relname as table_name FROM pg_trigger JOIN pg_class ON pg_trigger.tgrelid = pg_class.oid WHERE NOT tgisinternal`);
   res.json(result.rows);
 });
 
-// 5. Auth Users (Isolamento auth.users)
-app.get('/api/data/:slug/auth/users', async (req: any, res: any) => {
-  try {
-    const result = await req.projectPool.query("SELECT id, email, created_at FROM auth.users");
-    res.json(result.rows);
-  } catch (e) { res.json([]); } // Caso o esquema auth ainda não tenha sido usado
-});
-
-// 6. Policies (RLS)
 app.get('/api/data/:slug/policies', async (req: any, res: any) => {
   const result = await req.projectPool.query("SELECT * FROM pg_policies WHERE schemaname = 'public'");
   res.json(result.rows);
 });
 
-// 7. Tabelas e Dados
+// 5. Data Browser (Tables & Query)
 app.get('/api/data/:slug/tables', async (req: any, res: any) => {
   const result = await req.projectPool.query("SELECT table_name as name FROM information_schema.tables WHERE table_schema = 'public'");
   res.json(result.rows);
@@ -224,7 +199,8 @@ app.get('/api/data/:slug/tables', async (req: any, res: any) => {
 
 app.get('/api/data/:slug/tables/:table/columns', async (req: any, res: any) => {
   const result = await req.projectPool.query(`
-    SELECT column_name as name, data_type as type, is_nullable = 'YES' as "nullable"
+    SELECT column_name as name, data_type as type, is_nullable = 'YES' as "nullable",
+    EXISTS (SELECT 1 FROM information_schema.key_column_usage kcu JOIN information_schema.table_constraints tc ON kcu.constraint_name = tc.constraint_name WHERE kcu.table_name = $1 AND kcu.column_name = column_name AND tc.constraint_type = 'PRIMARY KEY') as "isPrimaryKey"
     FROM information_schema.columns WHERE table_name = $1
   `, [req.params.table]);
   res.json(result.rows);
@@ -235,15 +211,13 @@ app.get('/api/data/:slug/tables/:table/data', async (req: any, res: any) => {
   res.json(result.rows);
 });
 
-// 8. Stats para Dashboard
 app.get('/api/data/:slug/stats', async (req: any, res: any) => {
-  const tables = await req.projectPool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'");
-  const size = await req.projectPool.query("SELECT pg_size_pretty(pg_database_size(current_database()))");
-  res.json({ 
-    tables: parseInt(tables.rows[0].count), 
-    size: size.rows[0].pg_size_pretty,
-    users: 0 
-  });
+  try {
+    const tables = await req.projectPool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'");
+    const size = await req.projectPool.query("SELECT pg_size_pretty(pg_database_size(current_database()))");
+    const users = await req.projectPool.query("SELECT count(*) FROM auth.users").catch(() => ({ rows: [{ count: 0 }] }));
+    res.json({ tables: parseInt(tables.rows[0].count), size: size.rows[0].pg_size_pretty, users: parseInt(users.rows[0].count) });
+  } catch (e) { res.json({ tables: 0, size: '0 MB', users: 0 }); }
 });
 
 app.post('/api/data/:slug/query', async (req: any, res: any) => {
@@ -253,9 +227,7 @@ app.post('/api/data/:slug/query', async (req: any, res: any) => {
     await systemPool.query('INSERT INTO system.api_logs (project_slug, method, path, status_code, duration_ms) VALUES ($1, $2, $3, $4, $5)', 
       [req.params.slug, 'POST', req.path, 200, Date.now() - startTime]);
     res.json(result);
-  } catch (e: any) {
-    res.status(400).json({ error: e.message });
-  }
+  } catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
-app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.0 Operational on port ${PORT}`));
+app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.1 Operational on port ${PORT}`));

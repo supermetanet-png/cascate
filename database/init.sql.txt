@@ -11,7 +11,7 @@ CREATE SCHEMA IF NOT EXISTS system;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- Configurações Globais do Sistema
+-- Configurações Globais do Sistema (Trava de Domínio)
 CREATE TABLE IF NOT EXISTS system.config (
     key TEXT PRIMARY KEY,
     value TEXT,
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS system.projects (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Assets de Lógica
+-- Assets de Lógica (Metadados do Studio)
 CREATE TABLE IF NOT EXISTS system.assets (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     project_slug TEXT NOT NULL,
@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS system.webhooks (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Telemetria
+-- Logs de Telemetria (API Observability)
 CREATE TABLE IF NOT EXISTS system.api_logs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     project_slug TEXT NOT NULL,
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS system.api_logs (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Persistência de UI
+-- Persistência de UI (Grid settings)
 CREATE TABLE IF NOT EXISTS system.ui_settings (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     project_slug TEXT NOT NULL,
@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS system.ui_settings (
     UNIQUE(project_slug, table_name)
 );
 
--- Administradores
+-- Administradores do Cascata
 CREATE TABLE IF NOT EXISTS system.admin_users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     email TEXT UNIQUE NOT NULL,
@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS system.admin_users (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Inserção de segurança para admin inicial
 INSERT INTO system.admin_users (email, password_hash) 
 SELECT 'admin@cascata.io', 'admin123'
 WHERE NOT EXISTS (SELECT 1 FROM system.admin_users WHERE email = 'admin@cascata.io');
