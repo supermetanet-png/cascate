@@ -73,6 +73,7 @@ const RLSManager: React.FC<{ projectId: string }> = ({ projectId }) => {
       setShowCreator(false);
       fetchData();
       setSuccessMsg('RLS Policy deployed successfully.');
+      setTimeout(() => setSuccessMsg(null), 3000);
     } catch (e: any) { setError(e.message); } finally { setExecuting(false); }
   };
 

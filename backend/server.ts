@@ -19,7 +19,6 @@ const PORT = process.env.PORT || 3000;
 
 const generateKey = () => crypto.randomBytes(32).toString('hex');
 
-// SQL de inicialização para novos bancos de projeto
 const BOOTSTRAP_SQL = `
   CREATE SCHEMA IF NOT EXISTS auth;
   CREATE TABLE IF NOT EXISTS auth.users (
@@ -40,76 +39,43 @@ const BOOTSTRAP_SQL = `
   );
 `;
 
-// --- MIDDLEWARES ---
-
-const securityMaster = async (req: any, res: any, next: NextFunction) => {
+// Middleware de Segurança e Contexto
+const resolveContext = async (req: any, res: any, next: NextFunction) => {
   const host = req.headers.host || '';
-  const isIP = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/.test(host.split(':')[0]);
-
-  try {
-    const configResult = await systemPool.query("SELECT value FROM system.config WHERE key = 'global_domain'");
-    const globalDomain = configResult.rows[0]?.value;
-
-    if (globalDomain) {
-      if (isIP) return res.status(403).json({ error: 'Cascata Locked: Acesso via IP desativado.' });
-      if (host !== globalDomain && !req.path.startsWith('/api/data/')) {
-        return res.status(403).json({ error: 'Domain Binding Violation.' });
-      }
-    }
-
+  if (req.path.startsWith('/api/control/')) {
     if (req.path === '/api/control/auth/login') return next();
+    const authHeader = req.headers['authorization'];
+    if (!authHeader) return res.status(401).json({ error: 'Unauthorized' });
+    try {
+      jwt.verify(authHeader.split(' ')[1], process.env.SYSTEM_JWT_SECRET || 'secret');
+      return next();
+    } catch (e) { return res.status(401).json({ error: 'Session expired' }); }
+  }
 
-    if (req.path.includes('/control/')) {
-      const authHeader = req.headers['authorization'];
-      if (!authHeader) return res.status(401).json({ error: 'Admin token missing' });
-      try {
-        jwt.verify(authHeader.split(' ')[1], process.env.SYSTEM_JWT_SECRET || 'secret');
-        return next();
-      } catch (e) { return res.status(401).json({ error: 'Session expired' }); }
-    }
-    next();
-  } catch (e) { next(); }
-};
-
-const resolveProject = async (req: any, res: any, next: NextFunction) => {
-  if (req.path.includes('/control/')) return next();
-
-  const host = req.headers.host || '';
   const pathParts = req.path.split('/');
-  const slugFromUrl = pathParts[3]; 
+  const slug = pathParts[3];
+  if (!slug) return next();
 
   try {
-    let projectResult = await systemPool.query('SELECT * FROM system.projects WHERE custom_domain = $1', [host]);
-    if (projectResult.rowCount === 0 && slugFromUrl) {
-      projectResult = await systemPool.query('SELECT * FROM system.projects WHERE slug = $1', [slugFromUrl]);
-    }
-    
-    const proj = projectResult.rows[0];
-    if (!proj && req.path.startsWith('/api/data/')) return res.status(404).json({ error: 'Instance not found.' });
-
+    const result = await systemPool.query('SELECT * FROM system.projects WHERE slug = $1 OR custom_domain = $2', [slug, host]);
+    const proj = result.rows[0];
     if (proj) {
       req.project = proj;
       if (!projectPools.has(proj.db_name)) {
         const dbUrl = process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${proj.db_name}`);
         const pool = new Pool({ connectionString: dbUrl });
-        // Auto-Bootstrap on first connection
-        try { await pool.query(BOOTSTRAP_SQL); } catch(e) { console.error("Bootstrap warning", e); }
+        try { await pool.query(BOOTSTRAP_SQL); } catch(e) {}
         projectPools.set(proj.db_name, pool);
       }
       req.projectPool = projectPools.get(proj.db_name);
     }
     next();
-  } catch (e) { 
-    console.error("[CTX ERROR]", e);
-    res.status(500).json({ error: 'Context Resolution Error' }); 
-  }
+  } catch (e) { res.status(500).json({ error: 'Database isolation error' }); }
 };
 
-app.use(securityMaster as any);
-app.use(resolveProject as any);
+app.use(resolveContext as any);
 
-// --- ROUTES ---
-
+// --- CONTROL PLANE ---
 app.post('/api/control/auth/login', async (req: any, res: any) => {
   const { email, password } = req.body;
   const result = await systemPool.query('SELECT * FROM system.admin_users WHERE email = $1', [email]);
@@ -117,20 +83,7 @@ app.post('/api/control/auth/login', async (req: any, res: any) => {
   if (admin && admin.password_hash === password) {
     const token = jwt.sign({ sub: admin.id, role: 'admin' }, process.env.SYSTEM_JWT_SECRET || 'secret');
     res.json({ token });
-  } else res.status(401).json({ error: 'Credentials failure' });
-});
-
-app.get('/api/control/system/config', async (req: any, res: any) => {
-  const result = await systemPool.query('SELECT * FROM system.config');
-  const config: any = {};
-  result.rows.forEach(row => { config[row.key] = row.value; });
-  res.json(config);
-});
-
-app.post('/api/control/system/config', async (req: any, res: any) => {
-  const { key, value } = req.body;
-  await systemPool.query('INSERT INTO system.config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2', [key, value]);
-  res.json({ success: true });
+  } else res.status(401).json({ error: 'Invalid admin credentials' });
 });
 
 app.get('/api/control/projects', async (req: any, res: any) => {
@@ -160,45 +113,18 @@ app.patch('/api/control/projects/:slug', async (req: any, res: any) => {
   res.json(result.rows[0]);
 });
 
-app.post('/api/data/:slug/assets', async (req: any, res: any) => {
-  const { id, name, type, parent_id, metadata } = req.body;
-  try {
-    const result = await systemPool.query(
-      `INSERT INTO system.assets (id, project_slug, name, type, parent_id, metadata) 
-       VALUES (COALESCE($1, uuid_generate_v4()), $2, $3, $4, $5, $6) 
-       ON CONFLICT (id) DO UPDATE SET name = $3, metadata = $6, updated_at = now() RETURNING *`,
-      [id, req.params.slug, name, type, parent_id, metadata]
-    );
-    res.json(result.rows[0]);
-  } catch (e: any) {
-    console.error("[ASSET POST ERROR]", e);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/data/:slug/auth/users', async (req: any, res: any) => {
-  const { email, password } = req.body;
-  try {
-    const r = await req.projectPool.query("INSERT INTO auth.users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at", [email, password]);
-    res.json(r.rows[0]);
-  } catch(e: any) { 
-    console.error("[AUTH POST ERROR]", e);
-    res.status(400).json({ error: e.message }); 
-  }
-});
-
-app.get('/api/data/:slug/auth/users', async (req: any, res: any) => {
-  try { const r = await req.projectPool.query("SELECT id, email, created_at FROM auth.users"); res.json(r.rows); } catch(e) { res.json([]); }
-});
-
+// --- DATA PLANE ---
 app.get('/api/data/:slug/tables', async (req: any, res: any) => {
-  const r = await req.projectPool.query("SELECT table_name as name FROM information_schema.tables WHERE table_schema = 'public'");
+  if (!req.projectPool) return res.status(404).json({ error: 'Instance not ready' });
+  const r = await req.projectPool.query("SELECT table_name as name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'");
   res.json(r.rows);
 });
 
 app.get('/api/data/:slug/tables/:table/data', async (req: any, res: any) => {
-  const r = await req.projectPool.query(`SELECT * FROM public."${req.params.table}" LIMIT 1000`);
-  res.json(r.rows);
+  try {
+    const r = await req.projectPool.query(`SELECT * FROM public."${req.params.table}" LIMIT 1000`);
+    res.json(r.rows);
+  } catch(e: any) { res.status(400).json({ error: e.message }); }
 });
 
 app.get('/api/data/:slug/tables/:table/columns', async (req: any, res: any) => {
@@ -211,12 +137,21 @@ app.get('/api/data/:slug/tables/:table/columns', async (req: any, res: any) => {
 });
 
 app.post('/api/data/:slug/query', async (req: any, res: any) => {
-  try { res.json(await req.projectPool.query(req.body.sql)); } catch(e: any) { res.status(400).json({ error: e.message }); }
+  try { 
+    const r = await req.projectPool.query(req.body.sql);
+    res.json(r);
+  } catch(e: any) { res.status(400).json({ error: e.message }); }
 });
 
-app.get('/api/data/:slug/policies', async (req: any, res: any) => {
-  const r = await req.projectPool.query("SELECT * FROM pg_policies WHERE schemaname = 'public'");
-  res.json(r.rows);
+app.get('/api/data/:slug/auth/users', async (req: any, res: any) => {
+  try { const r = await req.projectPool.query("SELECT id, email, created_at FROM auth.users"); res.json(r.rows); } catch(e) { res.json([]); }
+});
+
+app.post('/api/data/:slug/auth/users', async (req: any, res: any) => {
+  try {
+    const r = await req.projectPool.query("INSERT INTO auth.users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at", [req.body.email, req.body.password]);
+    res.json(r.rows[0]);
+  } catch(e: any) { res.status(400).json({ error: e.message }); }
 });
 
 app.get('/api/data/:slug/ui-settings/:table', async (req: any, res: any) => {
@@ -225,12 +160,28 @@ app.get('/api/data/:slug/ui-settings/:table', async (req: any, res: any) => {
 });
 
 app.post('/api/data/:slug/ui-settings/:table', async (req: any, res: any) => {
-  const { settings } = req.body;
   await systemPool.query(
     'INSERT INTO system.ui_settings (project_slug, table_name, settings) VALUES ($1, $2, $3) ON CONFLICT (project_slug, table_name) DO UPDATE SET settings = $3',
-    [req.params.slug, req.params.table, settings]
+    [req.params.slug, req.params.table, req.body.settings]
   );
   res.json({ success: true });
 });
 
-app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.5 operational on port ${PORT}`));
+app.get('/api/data/:slug/policies', async (req: any, res: any) => {
+  const r = await req.projectPool.query("SELECT * FROM pg_policies WHERE schemaname = 'public'");
+  res.json(r.rows);
+});
+
+app.get('/api/control/system/config', async (req: any, res: any) => {
+  const result = await systemPool.query('SELECT * FROM system.config');
+  const config: any = {};
+  result.rows.forEach(row => { config[row.key] = row.value; });
+  res.json(config);
+});
+
+app.post('/api/control/system/config', async (req: any, res: any) => {
+  await systemPool.query('INSERT INTO system.config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2', [req.body.key, req.body.value]);
+  res.json({ success: true });
+});
+
+app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.6 - Operational`));
