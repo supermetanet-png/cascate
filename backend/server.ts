@@ -131,6 +131,7 @@ app.use(customDomainRewriter as any);
  * - Validação estrita de chaves vinculadas ao projeto
  * - Normalização de headers e suporte a acesso mestre via Studio
  * - Correção: Prioriza Authorization: Bearer para chamadas do Studio, garantindo privilégio de "Acesso Mestre"
+ * - SOLUÇÃO: Aceita token via query string para visualização de arquivos no navegador
  */
 const cascataAuth = async (req: any, res: any, next: NextFunction) => {
   // 1. Tratamento de Rotas do Plano de Controle (Admin Studio)
@@ -149,13 +150,16 @@ const cascataAuth = async (req: any, res: any, next: NextFunction) => {
   const apikeyRaw = req.headers['apikey'] || req.query.apikey;
   const authHeader = req.headers['authorization'];
   const bearerToken = (authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null)?.trim();
-  const apikey = (apikeyRaw || bearerToken)?.trim();
+  
+  // SOLUÇÃO: Aceita token via query string para visualização de arquivos no navegador
+  const queryToken = req.query.token;
+  const apikey = (apikeyRaw || bearerToken || queryToken)?.trim();
 
   // Verificação de Acesso Mestre (Admin do Studio acessando dados do projeto via Bearer)
-  if (bearerToken) {
+  if (bearerToken || queryToken) {
     try {
       // Se o token for um JWT válido do sistema, concede privilégios de service_role para o Studio
-      jwt.verify(bearerToken, process.env.SYSTEM_JWT_SECRET || 'secret');
+      jwt.verify((bearerToken || queryToken), process.env.SYSTEM_JWT_SECRET || 'secret');
       req.userRole = 'service_role';
       return next();
     } catch (e) {
@@ -175,9 +179,9 @@ const cascataAuth = async (req: any, res: any, next: NextFunction) => {
   }
 
   // Verificação de JWT de Usuário do Projeto (auth.users)
-  if (bearerToken && req.project?.jwt_secret) {
+  if ((bearerToken || queryToken) && req.project?.jwt_secret) {
     try {
-      const decoded = jwt.verify(bearerToken, req.project.jwt_secret);
+      const decoded = jwt.verify((bearerToken || queryToken), req.project.jwt_secret);
       req.user = decoded; 
       req.userRole = 'authenticated';
       return next();
@@ -365,9 +369,37 @@ app.post('/api/data/:slug/storage/:bucket/folder', cascataAuth as any, async (re
   res.json({ success: true });
 });
 
-// Upload com Path
+// Upload com Validação de Regras de Tamanho
 app.post('/api/data/:slug/storage/:bucket/upload', cascataAuth as any, upload.single('file') as any, async (req: any, res: any) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
+
+  // Lógica de Limites (Simulando configuração dinâmica via metadata do projeto)
+  const limits = req.project.metadata?.storage_limits || {
+    global: 100 * 1024 * 1024, // 100MB Default
+    images: 10 * 1024 * 1024,  // 10MB Images
+    videos: 500 * 1024 * 1024, // 500MB Videos
+    text: 2 * 1024 * 1024      // 2MB Text
+  };
+
+  const ext = path.extname(req.file.originalname).toLowerCase();
+  const size = req.file.size;
+  let allowed = true;
+
+  if (['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'].includes(ext)) {
+    if (size > limits.images) allowed = false;
+  } else if (['.mp4', '.mov', '.avi', '.mkv'].includes(ext)) {
+    if (size > limits.videos) allowed = false;
+  } else if (['.txt', '.csv', '.json', '.pdf'].includes(ext)) {
+    if (size > limits.text) allowed = false;
+  } else if (size > limits.global) {
+    allowed = false;
+  }
+
+  if (!allowed) {
+    fs.unlinkSync(req.file.path);
+    return res.status(400).json({ error: `File size exceeds category limit for ${ext}` });
+  }
+
   const targetPath = req.body.path || '';
   const dest = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, targetPath, req.file.originalname);
   if (!fs.existsSync(path.dirname(dest))) fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -403,7 +435,7 @@ app.get('/api/data/:slug/storage/:bucket/object/:path(*)', cascataAuth as any, a
   const full = path.join(STORAGE_ROOT, req.project.slug, req.params.bucket, req.params.path);
   if (fs.existsSync(full) && !fs.lstatSync(full).isDirectory()) {
     res.sendFile(full);
-  } else res.status(404).json({ error: 'Not found' });
+  } else res.status(404).json({ error: 'Asset not found.' });
 });
 
 // --- DATA PLANE ROUTES ---
@@ -552,4 +584,4 @@ app.get('/api/data/:slug/logs', cascataAuth as any, async (req: any, res: any) =
   res.json(result.rows);
 });
 
-app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.1 Storage Orchestration na porta ${PORT}`));
+app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.2 Storage/Auth Optimized na porta ${PORT}`));
