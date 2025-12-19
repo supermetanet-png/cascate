@@ -14,9 +14,31 @@ app.use(express.json({ limit: '100mb' }) as any);
 
 const { Pool } = pg;
 const systemPool = new Pool({ connectionString: process.env.SYSTEM_DATABASE_URL });
+const projectPools = new Map<string, pg.Pool>();
 const PORT = process.env.PORT || 3000;
 
 const generateKey = () => crypto.randomBytes(32).toString('hex');
+
+// SQL de inicialização para novos bancos de projeto
+const BOOTSTRAP_SQL = `
+  CREATE SCHEMA IF NOT EXISTS auth;
+  CREATE TABLE IF NOT EXISTS auth.users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    raw_user_meta JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE SCHEMA IF NOT EXISTS storage;
+  CREATE TABLE IF NOT EXISTS storage.buckets (id TEXT PRIMARY KEY, name TEXT UNIQUE);
+  CREATE TABLE IF NOT EXISTS storage.objects (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    bucket_id TEXT REFERENCES storage.buckets(id),
+    name TEXT,
+    metadata JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+`;
 
 // --- MIDDLEWARES ---
 
@@ -67,8 +89,14 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
 
     if (proj) {
       req.project = proj;
-      const dbUrl = process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${proj.db_name}`);
-      req.projectPool = new Pool({ connectionString: dbUrl });
+      if (!projectPools.has(proj.db_name)) {
+        const dbUrl = process.env.SYSTEM_DATABASE_URL?.replace(/\/[^\/]+$/, `/${proj.db_name}`);
+        const pool = new Pool({ connectionString: dbUrl });
+        // Auto-Bootstrap on first connection
+        try { await pool.query(BOOTSTRAP_SQL); } catch(e) { console.error("Bootstrap warning", e); }
+        projectPools.set(proj.db_name, pool);
+      }
+      req.projectPool = projectPools.get(proj.db_name);
     }
     next();
   } catch (e) { 
@@ -80,7 +108,7 @@ const resolveProject = async (req: any, res: any, next: NextFunction) => {
 app.use(securityMaster as any);
 app.use(resolveProject as any);
 
-// --- CONTROL PLANE ---
+// --- ROUTES ---
 
 app.post('/api/control/auth/login', async (req: any, res: any) => {
   const { email, password } = req.body;
@@ -132,13 +160,6 @@ app.patch('/api/control/projects/:slug', async (req: any, res: any) => {
   res.json(result.rows[0]);
 });
 
-// --- DATA PLANE ---
-
-app.get('/api/data/:slug/assets', async (req: any, res: any) => {
-  const result = await systemPool.query('SELECT * FROM system.assets WHERE project_slug = $1', [req.params.slug]);
-  res.json(result.rows);
-});
-
 app.post('/api/data/:slug/assets', async (req: any, res: any) => {
   const { id, name, type, parent_id, metadata } = req.body;
   try {
@@ -155,6 +176,49 @@ app.post('/api/data/:slug/assets', async (req: any, res: any) => {
   }
 });
 
+app.post('/api/data/:slug/auth/users', async (req: any, res: any) => {
+  const { email, password } = req.body;
+  try {
+    const r = await req.projectPool.query("INSERT INTO auth.users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at", [email, password]);
+    res.json(r.rows[0]);
+  } catch(e: any) { 
+    console.error("[AUTH POST ERROR]", e);
+    res.status(400).json({ error: e.message }); 
+  }
+});
+
+app.get('/api/data/:slug/auth/users', async (req: any, res: any) => {
+  try { const r = await req.projectPool.query("SELECT id, email, created_at FROM auth.users"); res.json(r.rows); } catch(e) { res.json([]); }
+});
+
+app.get('/api/data/:slug/tables', async (req: any, res: any) => {
+  const r = await req.projectPool.query("SELECT table_name as name FROM information_schema.tables WHERE table_schema = 'public'");
+  res.json(r.rows);
+});
+
+app.get('/api/data/:slug/tables/:table/data', async (req: any, res: any) => {
+  const r = await req.projectPool.query(`SELECT * FROM public."${req.params.table}" LIMIT 1000`);
+  res.json(r.rows);
+});
+
+app.get('/api/data/:slug/tables/:table/columns', async (req: any, res: any) => {
+  const r = await req.projectPool.query(`
+    SELECT column_name as name, data_type as type, is_nullable = 'YES' as "nullable",
+    EXISTS (SELECT 1 FROM information_schema.key_column_usage kcu JOIN information_schema.table_constraints tc ON kcu.constraint_name = tc.constraint_name WHERE kcu.table_name = $1 AND kcu.column_name = column_name AND tc.constraint_type = 'PRIMARY KEY') as "isPrimaryKey"
+    FROM information_schema.columns WHERE table_name = $1
+  `, [req.params.table]);
+  res.json(r.rows);
+});
+
+app.post('/api/data/:slug/query', async (req: any, res: any) => {
+  try { res.json(await req.projectPool.query(req.body.sql)); } catch(e: any) { res.status(400).json({ error: e.message }); }
+});
+
+app.get('/api/data/:slug/policies', async (req: any, res: any) => {
+  const r = await req.projectPool.query("SELECT * FROM pg_policies WHERE schemaname = 'public'");
+  res.json(r.rows);
+});
+
 app.get('/api/data/:slug/ui-settings/:table', async (req: any, res: any) => {
   const result = await systemPool.query('SELECT settings FROM system.ui_settings WHERE project_slug = $1 AND table_name = $2', [req.params.slug, req.params.table]);
   res.json(result.rows[0]?.settings || {});
@@ -169,33 +233,4 @@ app.post('/api/data/:slug/ui-settings/:table', async (req: any, res: any) => {
   res.json({ success: true });
 });
 
-app.get('/api/data/:slug/auth/users', async (req: any, res: any) => {
-  try { const r = await req.projectPool.query("SELECT id, email, created_at FROM auth.users"); res.json(r.rows); } catch(e) { res.json([]); }
-});
-
-app.post('/api/data/:slug/auth/users', async (req: any, res: any) => {
-  const { email, password } = req.body;
-  try {
-    const r = await req.projectPool.query("INSERT INTO auth.users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at", [email, password]);
-    res.json(r.rows[0]);
-  } catch(e: any) { 
-    console.error("[AUTH POST ERROR]", e);
-    res.status(400).json({ error: e.message }); 
-  }
-});
-
-app.get('/api/data/:slug/policies', async (req: any, res: any) => {
-  const r = await req.projectPool.query("SELECT * FROM pg_policies WHERE schemaname = 'public'");
-  res.json(r.rows);
-});
-
-app.get('/api/data/:slug/tables', async (req: any, res: any) => {
-  const r = await req.projectPool.query("SELECT table_name as name FROM information_schema.tables WHERE table_schema = 'public'");
-  res.json(r.rows);
-});
-
-app.post('/api/data/:slug/query', async (req: any, res: any) => {
-  try { res.json(await req.projectPool.query(req.body.sql)); } catch(e: any) { res.status(400).json({ error: e.message }); }
-});
-
-app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.4 operational`));
+app.listen(PORT, () => console.log(`[CASCATA MASTER ENGINE] v3.5 operational on port ${PORT}`));
